@@ -1,0 +1,27 @@
+[project]
+name = "differentially-private-deep-learning"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "moshebeutel",email = "moshebeutel@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "torch (>=2.6.0,<3.0.0)",
+    "torchvision (>=0.21.0,<0.22.0)",
+    "backpack-for-pytorch (>=1.7.1,<2.0.0)",
+    "numpy (>=2.2.4,<3.0.0)",
+    "scipy (>=1.15.2,<2.0.0)",
+    "six (>=1.17.0,<2.0.0)",
+    "tqdm (>=4.67.1,<5.0.0)",
+    "psutil (>=7.0.0,<8.0.0)"
+]
+
+[project.scripts]
+vision-dp-sgd = "vision:DP-SGD:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
