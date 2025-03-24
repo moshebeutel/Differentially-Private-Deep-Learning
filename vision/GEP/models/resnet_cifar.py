@@ -111,6 +111,13 @@ class ResNet(nn.Module):
 
         return x
 
+def resnet20halfparams():
+    """Constructs a ResNet-8 model.
+
+    """
+    model = ResNet(BasicBlock, [2, 2, 2])
+    return model
+
 
 def resnet20():
     """Constructs a ResNet-20 model.
@@ -158,3 +165,16 @@ def resnet1202():
     """
     model = ResNet(BasicBlock, [200, 200, 200])
     return model    
+
+
+if __name__ == '__main__':
+    model = resnet20halfparams()
+    numeles = 0
+    for name, param in model.named_parameters():
+        print(name, param.shape, param.numel())
+        numeles += param.numel()
+    print(model)
+    x = torch.randn(1, 3, 32, 32)
+    y = model(x)
+    print(y.size())
+    print(numeles)

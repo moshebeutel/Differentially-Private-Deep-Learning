@@ -42,7 +42,7 @@ parser.add_argument('--rgp', action='store_true', help='use residual gradient pe
 parser.add_argument('--clip0', default=5., type=float, help='clipping threshold for gradient embedding')
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
-parser.add_argument('--num_groups', default=3, type=int, help='number of parameters groups')
+parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
 parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 
 parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
@@ -95,7 +95,7 @@ if('cifar' in args.aux_dataset):
     for public_inputs, public_targets in public_data_loader:
         break
 else:
-    public_inputs = torch.load('imagenet_examples_2000')[:num_public_examples]
+    public_inputs = torch.load('/home/user1/GIT/Differentially-Private-Deep-Learning/vision/GEP/imagenet_examples_2000')[:num_public_examples]
 if(not args.real_labels):
     public_targets = torch.randint(high=10, size=(num_public_examples,))
 public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
