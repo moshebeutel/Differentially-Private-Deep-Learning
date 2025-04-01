@@ -43,11 +43,11 @@ parser.add_argument('--clip0', default=5., type=float, help='clipping threshold 
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
 parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
-parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
+parser.add_argument('--num_bases', default=200, type=int, help='dimension of anchor subspace')
 
 parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
 parser.add_argument('--aux_dataset', default='imagenet', type=str, help='name of the public dataset, [cifar10, cifar100, imagenet]')
-parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
+parser.add_argument('--aux_data_size', default=400, type=int, help='size of the auxiliary dataset')
 
 
 args = parser.parse_args()
@@ -111,6 +111,7 @@ print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale fo
 
 print('\n==> Creating GEP class instance')
 gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter).cuda()
+
 ## attach auxiliary data to GEP instance
 gep.public_inputs = public_inputs
 gep.public_targets = public_targets
@@ -138,7 +139,19 @@ net = extend(net)
 
 net.gep = gep
 
-
+# print('@@@@@@')
+# # for m in gep.modules():
+# #     print('******')
+# #     print(type(m))
+#
+# for n,_ in gep.named_parameters():
+#     print(n)
+#
+# for n,_ in net.named_parameters():
+#     print(n)
+#
+# print('@@@@@@')
+#
 num_params = 0
 for p in net.parameters():
     num_params += p.numel()
@@ -168,9 +181,12 @@ def group_params(num_p, groups):
 
 print('\n==> Dividing parameters in to %d groups'%args.num_groups)
 gep.num_param_list = group_params(num_params, args.num_groups)
+# if gep.add_perp_vector:
+#     gep.nullspace_factor = (torch.randn(args.num_groups).cuda() + 1) * 0.1
+#     gep.nullspace_factor.requires_grad = True
 
 optimizer = optim.SGD(
-        net.parameters(), 
+        net.parameters(),
         lr=args.lr, 
         momentum=args.momentum, 
         weight_decay=args.weight_decay)
@@ -191,6 +207,7 @@ def train(epoch):
         np.random.shuffle(sample_idxes)
 
     for batch_idx in range(steps):
+
         if(args.dataset=='svhn'):
             current_batch_idxes = sample_idxes[batch_idx*args.batchsize : (batch_idx+1)*args.batchsize]
             inputs, targets = train_samples[current_batch_idxes], train_labels[current_batch_idxes]
@@ -211,9 +228,11 @@ def train(epoch):
             loss = loss_func(outputs, targets)
             with backpack(BatchGrad()):
                 loss.backward()
-            for p in net.parameters():
-                batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
-                del p.grad_batch
+            for n, p in net.named_parameters():
+                print(n)
+                if hasattr(p, 'grad_batch'):
+                    batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
+                    del p.grad_batch
             ## compute gradient embeddings and residual gradients
             clipped_theta, residual_grad, target_grad = net.gep(flatten_tensor(batch_grad_list), logging = logging)
             ## add noise to guarantee differential privacy
@@ -222,10 +241,11 @@ def train(epoch):
             clipped_theta += theta_noise
             residual_grad += grad_noise
             ## update with Biased-GEP or GEP
-            if(args.rgp):
-                noisy_grad = gep.get_approx_grad(clipped_theta) + residual_grad
-            else:
-                noisy_grad = gep.get_approx_grad(clipped_theta)
+            with torch.no_grad():
+                if(args.rgp):
+                    noisy_grad = gep.get_approx_grad(clipped_theta) + residual_grad
+                else:
+                    noisy_grad = gep.get_approx_grad(clipped_theta)
             if(logging):
                 print('target grad norm: %.2f, noisy approximation norm: %.2f'%(target_grad.norm().item(), noisy_grad.norm().item()))
             ## make use of noisy gradients
@@ -254,6 +274,7 @@ def train(epoch):
         total += targets.size(0)
         correct += predicted.eq(targets.data).float().cpu().sum()
         acc = 100.*float(correct)/float(total)
+        print(f'batch {batch_idx+1}/{steps} acc {acc:.4f} correct {correct}/{total} perp_factor {float(gep.nullspace_factors[0].weight):.4f}')
     t1 = time.time()
     print('Train loss:%.5f'%(train_loss/(batch_idx+1)), 'time: %d s'%(t1-t0), 'train acc:', acc, end=' ')
     return (train_loss/batch_idx, acc)

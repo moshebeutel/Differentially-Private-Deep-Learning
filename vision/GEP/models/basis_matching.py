@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -6,6 +8,9 @@ import math
 #package for computing individual gradients
 from backpack import backpack, extend
 from backpack.extensions import BatchGrad
+
+from vision.GEP.models.nonlinear_basis_matching import initialize_weights
+
 
 def flatten_tensor(tensor_list):
 
@@ -69,11 +74,32 @@ def get_bases(pub_grad, num_bases, power_iter=1, logging=False):
     error_rate = check_approx_error(L, pub_grad)
     return L, num_bases, error_rate
 
+def get_bases_svd(pub_grad: torch.Tensor, num_bases: int) -> tuple[torch.Tensor, int, float]:
+    num_k = pub_grad.shape[0]
+    num_p = pub_grad.shape[1]
+
+    num_bases = min(num_bases, num_p)
+    U, S, Vh = torch.svd(pub_grad)
+    L = Vh[:, :num_bases]
+    error_rate = check_approx_error(L, pub_grad)
+    return Vh, num_bases, error_rate
+
+class LinearCombination(nn.Module):
+    def __init__(self, num_dim):
+        super(LinearCombination, self).__init__()
+        self.weight = nn.Parameter(torch.empty(1,1))
+        nn.init.kaiming_normal_(self.weight)
+        self.num_dim = num_dim
+    def forward(self, x):
+        assert x.shape[1] > self.num_dim, f'Expected x.shape[1] > {self.num_dim} dimension, but got {x.shape[1]}'
+        in_vec = x[:, :self.num_dim]
+        perp_vec = x[:, self.num_dim:]
+        return in_vec * self.weight + perp_vec * (1-self.weight)
 
 
 class GEP(nn.Module):
 
-    def __init__(self, num_bases, batch_size, clip0=1, clip1=1, power_iter=1):
+    def __init__(self, num_bases, batch_size, clip0=1, clip1=1, power_iter=1, add_perp_vector=True):
         super(GEP, self).__init__()
 
         self.num_bases = num_bases
@@ -83,8 +109,26 @@ class GEP(nn.Module):
         self.batch_size = batch_size
         self.approx_error = {}
 
+        self.selected_bases_list: list[torch.Tensor] = []
+        self.selected_bases_perp_list: list[torch.Tensor] = []
+        self.add_perp_vector = add_perp_vector
+        # self.nullspace_factor: torch.Tensor = torch.randn(0.1)
+        # self.nullspace_factor = nn.Parameter((torch.randn(num_groups) + 1) * 0.1, requires_grad=True)
+        # for i in range(num_groups):
+        #     self.register_parameter(f'nullspace_factor_{i}', self.nullspace_factor[i])
+        # self.register_parameter(f'nullspace_factor', self.nullspace_factor)
+
+
+        num_param_list = [268346]
+        num_groups = len(num_param_list)
+        self.nullspace_factors = nn.ModuleList([LinearCombination(num_dim=268346) for i in range(num_groups)])
+
+        initialize_weights(self)
+
+
     def get_approx_grad(self, embedding):
-        bases_list, num_bases_list, num_param_list = self.selected_bases_list, self.num_bases_list, self.num_param_list
+        # bases_list, num_bases_list, num_param_list = self.selected_bases_list, self.num_bases_list, self.num_param_list
+        bases_list, perp_bases_list, num_bases_list, num_param_list = self.selected_bases_list, self.selected_bases_perp_list, self.num_bases_list, self.num_param_list
         grad_list = []
         offset = 0
         if(len(embedding.shape)>1):
@@ -95,8 +139,19 @@ class GEP(nn.Module):
 
         for i, bases in enumerate(bases_list):
             num_bases = num_bases_list[i]
+            perp_bases = perp_bases_list[i]
 
-            grad = torch.matmul(embedding[:, offset:offset+num_bases].view(bs, -1), bases.T)
+            if self.add_perp_vector:
+                assert hasattr(self, 'nullspace_factors'), f'Expected definition of nullspace factor'
+                in_vec = torch.matmul(embedding[:, offset:offset + num_bases].view(bs, -1), bases.T)
+                perp_vec = torch.matmul(embedding[:, offset:offset+num_bases].view(bs, -1), perp_bases.T)
+                x = torch.cat([in_vec, perp_vec], dim=1)
+                grad = self.nullspace_factors[i](x)
+                # grad = ((1 - self.nullspace_factor) * torch.matmul(embedding[:, offset:offset+num_bases].view(bs, -1), bases.T) +
+                #     self.nullspace_factor *  torch.matmul(embedding[:, offset:offset+num_bases].view(bs, -1), perp_bases.T))
+            else:
+                grad = torch.matmul(embedding[:, offset:offset+num_bases].view(bs, -1), bases.T)
+
             if(bs>1):
                 grad_list.append(grad.view(bs, -1))
             else:
@@ -115,8 +170,9 @@ class GEP(nn.Module):
             loss.backward()
         cur_batch_grad_list = [] 
         for p in net.parameters():
-            cur_batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
-            del p.grad_batch
+            if hasattr(p, 'grad_batch'):
+                cur_batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
+                del p.grad_batch
         return flatten_tensor(cur_batch_grad_list)
 
     def get_anchor_space(self, net, loss_func, logging=False):
@@ -127,6 +183,7 @@ class GEP(nn.Module):
             num_group_p = len(num_param_list)
 
             selected_bases_list = []
+            selected_bases_perp_list = []
             num_bases_list = []
             pub_errs = []
 
@@ -141,21 +198,25 @@ class GEP(nn.Module):
                 pub_grad = anchor_grads[:, offset:offset+num_param]
                 offset += num_param
                 
-                num_bases = num_bases_list[i]
-                
+                num_bases: int = num_bases_list[i]
 
-                selected_bases, num_bases, pub_error = get_bases(pub_grad, num_bases, self.power_iter, logging)
+                # selected_bases, num_bases, pub_error = get_bases(pub_grad, num_bases, self.power_iter, logging)
+                Vh, num_bases, pub_error = get_bases_svd(pub_grad, num_bases)
+                selected_bases = Vh[:, :num_bases]
+                selected_bases_perp = Vh[:, num_bases:]
                 pub_errs.append(pub_error)
 
                 num_bases_list[i] = num_bases
                 selected_bases_list.append(selected_bases)
+                selected_bases_perp_list.append(selected_bases_perp)
 
             self.selected_bases_list = selected_bases_list
+            self.selected_bases_perp_list = selected_bases_perp_list
             self.num_bases_list = num_bases_list
             self.approx_errors = pub_errs
         del anchor_grads
 
-    def forward(self, target_grad, logging=False):
+    def forward(self, target_grad, logging=True):
         with torch.no_grad():
             num_param_list = self.num_param_list
             embedding_list = []
@@ -191,6 +252,7 @@ class GEP(nn.Module):
                 print('average norm of clipped embedding: ', torch.mean(norms).item(), 'max norm: ', torch.max(norms).item(), 'median norm: ', torch.median(norms).item())
             avg_clipped_embedding = torch.sum(clipped_embedding, dim=0) / self.batch_size
 
+            # with torch.no_grad():
             no_reduction_approx = self.get_approx_grad(concatnated_embedding)
             residual_gradients = target_grad - no_reduction_approx
             clip_column(residual_gradients, clip=self.clip1) #inplace clipping to save memory

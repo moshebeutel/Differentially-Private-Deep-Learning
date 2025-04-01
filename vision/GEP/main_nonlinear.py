@@ -12,6 +12,7 @@ import torchvision
 from backpack import backpack, extend
 from backpack.extensions import BatchGrad
 from torch.utils.data import DataLoader
+from tqdm import trange
 
 from models.resnet_cifar import resnet20, resnet20halfparams
 from models.nonlinear_basis_matching import UNetGEP
@@ -25,7 +26,7 @@ parser.add_argument('--resume', '-r', action='store_true', help='resume from che
 parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
 parser.add_argument('--seed', default=2, type=int, help='random seed')
 parser.add_argument('--weight_decay', default=1e-3, type=float, help='weight decay')
-parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
+parser.add_argument('--batchsize', default=300, type=int, help='batch size')
 parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
 parser.add_argument('--lr', default=0.1, type=float, help='base learning rate (default=0.1)')
 parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
@@ -115,6 +116,7 @@ print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale fo
 print('\n==> Creating GEP class instance')
 
 gep = UNetGEP(public_data_loader=public_data_loader, input_length=171578, num_layers=6, base_channels=64, num_bases=args.num_bases, batch_size=args.batchsize, clip0=args.clip0, clip1=args.clip1)
+# gep = UNetGEP(public_data_loader=public_data_loader, input_length=536692, num_layers=6, base_channels=64, num_bases=args.num_bases, batch_size=args.batchsize, clip0=args.clip0, clip1=args.clip1)
 # ## attach auxiliary data to GEP instance
 # gep.public_inputs = public_inputs
 # gep.public_targets = public_targets
@@ -135,13 +137,13 @@ if(args.resume):
     except:
         print('resume from checkpoint failed')
 else:
-    net = resnet20()
-    # net = resnet20halfparams()
+    # net = resnet20()
+    net = resnet20halfparams()
     net.cuda()
 
 net = extend(net)
 
-net.gep = gep
+# net.gep = gep
 
 
 num_params = 0
@@ -182,6 +184,7 @@ optimizer = optim.SGD(
 
 def train(epoch):
     print('\nEpoch: %d' % epoch)
+    global net, optimizer, train_samples, train_labels, noise_multiplier0, noise_multiplier1, args, gep
     net.train()
     train_loss = 0
     correct = 0
@@ -195,7 +198,8 @@ def train(epoch):
         sample_idxes = np.arange(n_training)
         np.random.shuffle(sample_idxes)
 
-    for batch_idx in range(steps):
+    for batch_idx in trange(steps):
+        print(f'\rBatch {batch_idx}/{steps}', end='')
         if(args.dataset=='svhn'):
             current_batch_idxes = sample_idxes[batch_idx*args.batchsize : (batch_idx+1)*args.batchsize]
             inputs, targets = train_samples[current_batch_idxes], train_labels[current_batch_idxes]
@@ -205,12 +209,22 @@ def train(epoch):
             inputs, targets = inputs.cuda(), targets.cuda()
 
         if(args.private):
-            logging = batch_idx % 20 == 0
+            logging = True
+            print(f'\nlogging enabled {logging}')
+            # logging = batch_idx % 20 == 0
             ## compute anchor subspace
-            optimizer.zero_grad()
-            net.gep.get_anchor_space(net, loss_func=loss_func, logging=logging)
+            # net.gep.get_anchor_space(net, loss_func=loss_func, logging=logging)
+            # net = net.to('cpu')
+            print('computing anchor space')
+            gep.get_anchor_space(net, loss_func=loss_func, logging=logging)
+            # net = net.to('cuda')
+            allocated_memory = torch.cuda.memory_allocated('cuda') / 1024 ** 2
+            print(f"Allocated GPU memory: {allocated_memory:.2f} MB")
             ## collect batch gradients
             batch_grad_list = []
+            print('collecting batch gradients')
+            net = net.cuda()
+            inputs, targets = inputs.cuda(), targets.cuda()
             optimizer.zero_grad()
             outputs = net(inputs)
             loss = loss_func(outputs, targets)
@@ -219,15 +233,18 @@ def train(epoch):
             for p in net.parameters():
                 batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
                 del p.grad_batch
+            print('embedding batch gradients')
             ## compute gradient embeddings and residual gradients
-            clipped_theta, target_grad = net.gep(flatten_tensor(batch_grad_list), logging = logging)
+            # clipped_theta, target_grad = net.gep(flatten_tensor(batch_grad_list), logging = logging)
+            clipped_theta, target_grad = gep(flatten_tensor(batch_grad_list).reshape(inputs.shape[0], -1), logging = logging)
             ## add noise to guarantee differential privacy
+            print('clipping and adding noise')
             theta_noise = torch.normal(0, noise_multiplier0*args.clip0/args.batchsize, size=clipped_theta.shape, device=clipped_theta.device)
             grad_noise = torch.normal(0, noise_multiplier1*args.clip1/args.batchsize, size=target_grad.shape, device=target_grad.device)
             clipped_theta += theta_noise
             ## update with Biased-GEP or GEP
             assert args.rgp == False, f'expected rgp = False, got {args.rgp}. nonlinear'
-            noisy_grad = gep.get_approx_grad(clipped_theta)
+            noisy_grad = gep.get_approx_grad(clipped_theta.unsqueeze(0)).squeeze()
 
             if(logging):
                 print('target grad norm: %.2f, noisy approximation norm: %.2f'%(target_grad.norm().item(), noisy_grad.norm().item()))
@@ -258,13 +275,14 @@ def train(epoch):
         total += targets.size(0)
         correct += predicted.eq(targets.data).float().cpu().sum()
         acc = 100.*float(correct)/float(total)
+        print(f'batch {batch_idx}', 'train loss:%.5f'%(train_loss/(batch_idx+1)), 'time: %d s'%(time.time()-t0), 'train acc:', acc)
     t1 = time.time()
     print('Train loss:%.5f'%(train_loss/(batch_idx+1)), 'time: %d s'%(t1-t0), 'train acc:', acc, end=' ')
     return (train_loss/batch_idx, acc)
 
 
 def test(epoch):
-    global best_acc
+    global best_acc, net
     net.eval()
     test_loss = 0
     correct = 0
@@ -310,5 +328,6 @@ except:
     pass
 import pickle
 bfile=open('approx_errors/'+args.sess+'.pickle', 'wb')
-pickle.dump(net.gep.approx_error, bfile)
+pickle.dump(gep.approx_error, bfile)
+# pickle.dump(net.gep.approx_error, bfile)
 bfile.close()

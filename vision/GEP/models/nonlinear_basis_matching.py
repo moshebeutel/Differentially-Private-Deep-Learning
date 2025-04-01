@@ -235,7 +235,7 @@ def initialize_weights(module: nn.Module):
 
 
 class Unet1dAutoencoder(nn.Module):
-    def __init__(self, input_length, num_layers=6, latent_dim=44, base_channels=64):
+    def __init__(self, input_length, num_layers=6, latent_dim=1000, base_channels=64):
         """
         Args:
             input_length (int): Length of the input 1D tensor.
@@ -254,29 +254,35 @@ class Unet1dAutoencoder(nn.Module):
         in_channels = 1
         out_channels = base_channels
 
-        for _ in range(num_layers):
+        for i in range(num_layers):
             self.encoder.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, stride=3, padding=0))
+            # self.encoder.append(nn.Conv1d(in_channels, out_channels, kernel_size=5, stride=4, padding=0))
+            print(f'encoder: layer {i} in_channels {in_channels} out_channels {out_channels}')
             in_channels = out_channels
             out_channels *= 2
 
-            # Compute the output size after encoding
-            dummy_input = torch.zeros(1, 1, input_length)
-            with torch.no_grad():
-                x = dummy_input
-                for layer in self.encoder:
-                    x = torch.relu(layer(x))
-                encoded = x
-                self.encoded_channels = encoded.shape[1]
-                self.encoded_length = encoded.shape[2]
-                encoded_size = self.encoded_channels * self.encoded_length
+        # Compute the output size after encoding
+        dummy_input = torch.zeros(1, 1, input_length)
+        with torch.no_grad():
+            x = dummy_input
+            for layer in self.encoder:
+                x = torch.relu(layer(x))
+            encoded = x
+            self.encoded_channels = encoded.shape[1]
+            self.encoded_length = encoded.shape[2]
+            encoded_size = self.encoded_channels * self.encoded_length
 
-            dummy_input = dummy_input.cpu().detach()
-            x = x.cpu().detach()
-            dummy_input = None
-            x = None
-            del dummy_input, x
-            gc.collect()
-            torch.cuda.empty_cache()
+        print(f'encoded size {encoded_size}')
+        print(f'encoded channels {self.encoded_channels}')
+        print(f'encoded length {self.encoded_length}')
+
+        dummy_input = dummy_input.cpu().detach()
+        x = x.cpu().detach()
+        dummy_input = None
+        x = None
+        del dummy_input, x
+        gc.collect()
+        torch.cuda.empty_cache()
 
         # Bottleneck (Latent Space)
         self.bottleneck_enc = nn.Linear(encoded_size, self.latent_dim)
@@ -287,16 +293,24 @@ class Unet1dAutoencoder(nn.Module):
         in_channels = self.encoded_channels
         out_channels = in_channels // 2
 
-        for _ in range(num_layers):
+        for i in range(num_layers):
+            print(f'decoder: layer {i} in_channels {in_channels} out_channels {out_channels}')
+
             self.decoder.append(
                 nn.ConvTranspose1d(in_channels, out_channels, kernel_size=3, stride=3, padding=0, output_padding=1))
+                # nn.ConvTranspose1d(in_channels, out_channels, kernel_size=5, stride=4, padding=0, output_padding=1))
             in_channels = out_channels
             out_channels //= 2
 
         # Final output layer
         self.output_layer = nn.ConvTranspose1d(in_channels, 1, kernel_size=3, stride=3, padding=0, output_padding=1)
+        # self.output_layer = nn.ConvTranspose1d(in_channels, 1, kernel_size=5, stride=4, padding=0, output_padding=1)
 
         initialize_weights(self)
+
+        numeles = sum([p.numel() for p in self.parameters()])
+
+        print(f'autoencoder number of parameters: {numeles}')
 
 
     def encode(self, x):
@@ -375,12 +389,14 @@ class UNetGEP(GEP):
         # for loader in public_loaders:
 
         net.train()
-        batch_grad_list = []
+        flat_grads_tensor_list = []
 
         optimizer = torch.optim.SGD(net.parameters(), lr=1.0, weight_decay=0.1, momentum=0.9)
         # extend(net)
-        criteria = extend(criteria)
-        for batch in tqdm(self.public_loader):
+        # criteria = extend(criteria)
+        for batch in self.public_loader:
+            # for batch in tqdm(self.public_loader):
+            batch_grad_list = []
             x, Y = tuple(t.to(device) for t in batch)
             # allocated_memory = torch.cuda.memory_allocated(device) / 1024 ** 2
             # print(f"Allocated GPU memory: {allocated_memory:.2f} MB")
@@ -393,15 +409,21 @@ class UNetGEP(GEP):
             with backpack(BatchGrad()):
                 loss.backward()
             for p in net.parameters():
-                if p.grad is None:
+                if p.grad is None or p.grad_batch is None:
                     # print('nograd for', p)
                     pass
                 else:
-                    # print(p.grad.shape)
-                    batch_grad_list.append(p.grad.reshape(p.grad.shape[0], -1))
-
+                    batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
+                    # print(p.grad_batch.shape)
+                    p.grad_batch = p.grad_batch.detach().cpu()
+                    p.grad_batch = None
+                    del p.grad_batch
             # optimizer.step()
+            flat_grads_tensor_list.append(flatten_tensor(batch_grad_list))
 
+            batch_grad_list = [t.detach().cpu() for t in batch_grad_list]
+            batch_grad_list = None
+            del batch_grad_list
             x, Y, pred, loss = x.detach().cpu(), Y.detach().cpu(), pred.detach().cpu(), loss.detach().cpu()
             x, Y, pred, loss = None, None, None, None
             del x, Y, pred, loss
@@ -409,7 +431,13 @@ class UNetGEP(GEP):
             torch.cuda.empty_cache()
         optimizer.zero_grad()
 
-        dataloader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(flatten_tensor(batch_grad_list)), batch_size=4, shuffle=True)
+        dataloader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(torch.vstack(flat_grads_tensor_list)), batch_size=16, shuffle=True)
+
+
+
+        flat_grads_tensor_list = [t.detach().cpu() for t in flat_grads_tensor_list]
+        flat_grads_tensor_list = None
+        del flat_grads_tensor_list
 
 
         # autoencoder = get_autoencoder()
@@ -418,37 +446,61 @@ class UNetGEP(GEP):
         # autoencoder_loss_fn = nn.CosineEmbeddingLoss()
         autoencoder_loss_fn = nn.MSELoss()
         self._ae.train()
+        # for epoch in range(1):
+        # cpu_memory = psutil.virtual_memory()
+        # print(f"Available CPU memory: {cpu_memory.available / 1024 ** 2:.2f} MB")
+        epoch_loss = 1.0
         for epoch in range(5):
+            print(f'\nEpoch {epoch+1}/5 of training autoencoder epoch loss {epoch_loss}\n')
+            if epoch_loss < 0.001:
+                print('Early stop training autoencoder before epoch ', epoch+1, ' with loss ', epoch_loss, '\n')
+                break
+            print(f'\nPrev epoch loss {epoch_loss}\n')
+            epoch_loss = 0.0
             for i, batch in enumerate(dataloader):
+                # for batch in dataloader:
+                # for batch in tqdm(dataloader):
+                # cpu_memory = psutil.virtual_memory()
+                # print(f"Available CPU memory: {cpu_memory.available / 1024 ** 2:.2f} MB")
                 data = batch[0].to(device)
 
                 autoencoder_optimizer.zero_grad()
 
-                reconstructed, latent = self._ae.forward(data.unsqueeze(1))
+                reconstructed, latent = self._ae(data.unsqueeze(1))
 
                 # Trim reconstructed tensor to match data size
                 reconstructed = reconstructed[..., :data.size(-1)]
 
                 autoencoder_loss = autoencoder_loss_fn(reconstructed.squeeze(), data)  # Minimize reconstruction error
                 # autoencoder_loss = autoencoder_loss_fn(reconstructed.squeeze(), data, torch.ones(reconstructed.shape[0]).to(device))  # Minimize reconstruction error
+                batch_loss = float(autoencoder_loss)
+                epoch_loss += batch_loss
+                autoencoder_loss.backward()
+                autoencoder_optimizer.step()
+
 
                 data, reconstructed, latent = data.detach().cpu(), reconstructed.detach().cpu(), latent.detach().cpu()
                 data, reconstructed, latent = None, None, None
                 del data, reconstructed, latent
+
+                autoencoder_loss = autoencoder_loss.detach().cpu()
+                autoencoder_loss = None
+                del autoencoder_loss
                 gc.collect()
                 torch.cuda.empty_cache()
-
-                autoencoder_loss.backward()
-                autoencoder_optimizer.step()
-                # print(f'Epoch {epoch} iter {i} autoencoder_loss {autoencoder_loss.item()}')
+                # print(f'Epoch {epoch} iter {i} batch_loss {batch_loss} epoch_loss {epoch_loss}')
         self._ae = self._ae.to('cpu')
 
 
     def forward(self, target_grad, logging=False) -> tuple[torch.Tensor, torch.Tensor]:
+
+        self._ae = self._ae.to(target_grad.device)
         self._ae.eval()
         with torch.no_grad():
 
             embedding = self._ae.encode(target_grad.unsqueeze(1))
+
+
 
             clipped_embedding = clip_column(embedding, clip=self.clip0, inplace=False)
             if (logging):
