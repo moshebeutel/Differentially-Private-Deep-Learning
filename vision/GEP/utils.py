@@ -109,7 +109,7 @@ def checkpoint(net, acc, epoch, sess):
     
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
-    torch.save(state, './checkpoint/' + sess  + '.ckpt')
+    torch.save(state, './checkpoint/' + sess  + f'epoch_{epoch}_acc_{acc}.ckpt')
 
 def adjust_learning_rate(optimizer, init_lr, epoch, all_epoch):
     """decrease the learning rate at 100 and 150 epoch"""

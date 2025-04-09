@@ -1,3 +1,6 @@
+import copy
+from collections import OrderedDict
+from torch.func import functional_call
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -27,7 +30,7 @@ parser.add_argument('--resume', '-r', action='store_true', help='resume from che
 parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
 parser.add_argument('--seed', default=2, type=int, help='random seed')
 parser.add_argument('--weight_decay', default=2e-4, type=float, help='weight decay')
-parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
+parser.add_argument('--batchsize', default=500, type=int, help='batch size')
 parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
 parser.add_argument('--lr', default=0.1, type=float, help='base learning rate (default=0.1)')
 parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
@@ -35,7 +38,9 @@ parser.add_argument('--momentum', default=0.9, type=float, help='value of moment
 
 ## arguments for learning with differential privacy
 parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
-parser.add_argument('--eps', default=8., type=float, help='privacy parameter epsilon')
+parser.add_argument('--override', '-o', action='store_true', help='zero sigma')
+parser.add_argument('--perp', '-v', action='store_true', help='add perpendicular vector')
+parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help='privacy parameter epsilon')
 parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
 
 parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
@@ -43,11 +48,11 @@ parser.add_argument('--clip0', default=5., type=float, help='clipping threshold 
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
 parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
-parser.add_argument('--num_bases', default=200, type=int, help='dimension of anchor subspace')
+parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 
 parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
 parser.add_argument('--aux_dataset', default='imagenet', type=str, help='name of the public dataset, [cifar10, cifar100, imagenet]')
-parser.add_argument('--aux_data_size', default=400, type=int, help='size of the auxiliary dataset')
+parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
 
 
 args = parser.parse_args()
@@ -106,11 +111,12 @@ print('\n==> Computing noise scale for privacy budget (%.1f, %f)-DP'%(args.eps, 
 sampling_prob=args.batchsize/n_training
 steps = int(args.n_epoch/sampling_prob)
 sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=args.rgp)
-noise_multiplier0 = noise_multiplier1 = sigma
+# noise_multiplier0 = noise_multiplier1 = sigma
+noise_multiplier0 = noise_multiplier1 = 0
 print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale for residual gradient: ', noise_multiplier1, '\n rgp enabled: ', args.rgp, 'privacy guarantee: ', eps)
 
 print('\n==> Creating GEP class instance')
-gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter).cuda()
+gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp).cuda()
 
 ## attach auxiliary data to GEP instance
 gep.public_inputs = public_inputs
@@ -137,21 +143,8 @@ else:
 
 net = extend(net)
 
-net.gep = gep
 
-# print('@@@@@@')
-# # for m in gep.modules():
-# #     print('******')
-# #     print(type(m))
-#
-# for n,_ in gep.named_parameters():
-#     print(n)
-#
-# for n,_ in net.named_parameters():
-#     print(n)
-#
-# print('@@@@@@')
-#
+
 num_params = 0
 for p in net.parameters():
     num_params += p.numel()
@@ -178,12 +171,9 @@ def group_params(num_p, groups):
     num_param_list = [p_per_group] * (groups-1)
     num_param_list = num_param_list + [num_p-sum(num_param_list)]
     return num_param_list
-
+net.gep = gep
 print('\n==> Dividing parameters in to %d groups'%args.num_groups)
 gep.num_param_list = group_params(num_params, args.num_groups)
-# if gep.add_perp_vector:
-#     gep.nullspace_factor = (torch.randn(args.num_groups).cuda() + 1) * 0.1
-#     gep.nullspace_factor.requires_grad = True
 
 optimizer = optim.SGD(
         net.parameters(),
@@ -191,11 +181,13 @@ optimizer = optim.SGD(
         momentum=args.momentum, 
         weight_decay=args.weight_decay)
 
+
 def train(epoch):
     print('\nEpoch: %d' % epoch)
     net.train()
     train_loss = 0
-    correct = 0
+    train_accuracy: float = 0.
+    correct: int = 0
     total = 0
     t0 = time.time()
     steps = n_training//args.batchsize
@@ -216,7 +208,7 @@ def train(epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
 
-        if(args.private):
+        if args.private:
             logging = batch_idx % 20 == 0
             ## compute anchor subspace
             optimizer.zero_grad()
@@ -229,10 +221,10 @@ def train(epoch):
             with backpack(BatchGrad()):
                 loss.backward()
             for n, p in net.named_parameters():
-                print(n)
                 if hasattr(p, 'grad_batch'):
                     batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
                     del p.grad_batch
+
             ## compute gradient embeddings and residual gradients
             clipped_theta, residual_grad, target_grad = net.gep(flatten_tensor(batch_grad_list), logging = logging)
             ## add noise to guarantee differential privacy
@@ -240,21 +232,33 @@ def train(epoch):
             grad_noise = torch.normal(0, noise_multiplier1*args.clip1/args.batchsize, size=residual_grad.shape, device=residual_grad.device)
             clipped_theta += theta_noise
             residual_grad += grad_noise
+
+
             ## update with Biased-GEP or GEP
-            with torch.no_grad():
-                if(args.rgp):
-                    noisy_grad = gep.get_approx_grad(clipped_theta) + residual_grad
-                else:
-                    noisy_grad = gep.get_approx_grad(clipped_theta)
-            if(logging):
+            if(args.rgp):
+                noisy_grad = gep.get_approx_grad(clipped_theta) + residual_grad
+            else:
+                noisy_grad = gep.get_approx_grad(clipped_theta)
+            if logging:
                 print('target grad norm: %.2f, noisy approximation norm: %.2f'%(target_grad.norm().item(), noisy_grad.norm().item()))
             ## make use of noisy gradients
             offset = 0
-            for p in net.parameters():
-                shape = p.grad.shape
-                numel = p.grad.numel()
-                p.grad.data = noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
-                offset+=numel
+            new_params = OrderedDict()
+            for n, p in net.named_parameters():
+                if p.grad is not None:
+                    shape = p.grad.shape
+                    numel = p.grad.numel()
+                    new_params[n] = torch.add(p, torch.mul(args.lr , torch.reshape(noisy_grad[offset:offset+numel], shape)))
+                    p.grad.data = noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
+                    # p =  p + args.lr * noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
+                    # p.grad = None
+                    offset+=numel
+            if gep.add_perp_vector:
+                outputs = functional_call(net, new_params, (inputs, ))
+                loss = loss_func(outputs, targets)
+                loss.backward()
+                new_params['gep.nullspace_factors.0.weight'] = gep.nullspace_factors[0].weight
+                # net.load_state_dict(new_params)
         else:
             optimizer.zero_grad()
             outputs = net(inputs)
@@ -265,6 +269,7 @@ def train(epoch):
                     del p.grad_batch
             except:
                 pass
+
         optimizer.step()
         step_loss = loss.item()
         if(args.private):
@@ -273,11 +278,15 @@ def train(epoch):
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).float().cpu().sum()
-        acc = 100.*float(correct)/float(total)
-        print(f'batch {batch_idx+1}/{steps} acc {acc:.4f} correct {correct}/{total} perp_factor {float(gep.nullspace_factors[0].weight):.4f}')
+        train_accuracy = float(correct)/float(total)
+
+        # print(f'batch {batch_idx+1}/{steps} acc {acc:.4f} correct {correct}/{total}')
+        # print(f'batch {batch_idx+1}/{steps} acc {acc:.4f} correct {correct}/{total} perp_factor {float(gep.nullspace_factors[0].weight):.4f}')
     t1 = time.time()
-    print('Train loss:%.5f'%(train_loss/(batch_idx+1)), 'time: %d s'%(t1-t0), 'train acc:', acc, end=' ')
-    return (train_loss/batch_idx, acc)
+    print('Train loss:%.5f'%(train_loss/steps), 'time: %d s'%(t1-t0), f'train acc: {100. * train_accuracy:.2f}%', end=' ')
+    if args.perp:
+        print(f'perp_factor {float(gep.nullspace_factors[0].weight):.4f}')
+    return train_loss / steps, train_accuracy
 
 
 def test(epoch):
@@ -309,17 +318,23 @@ def test(epoch):
         ## Save checkpoint.
         if acc > best_acc:
             best_acc = acc
-            checkpoint(net, acc, epoch, args.sess)
+            checkpoint(net, acc, epoch, f'{args.sess}_perp_{args.perp}_sigma_{sigma}')
 
     return (test_loss/batch_idx, acc)
 
 
 print('\n==> Strat training')
-
+history = []
+save_every = 10
 for epoch in range(start_epoch, args.n_epoch):
     lr = adjust_learning_rate(optimizer, args.lr, epoch, all_epoch=args.n_epoch)
     train_loss, train_acc = train(epoch)
     test_loss, test_acc = test(epoch)
+    history.append([lr, train_loss, train_acc, test_loss, test_acc])
+    print('lr: ', lr)
+    if epoch % save_every == save_every - 1:
+        checkpoint(net, test_acc, epoch, f'{args.sess}_perp_{args.perp}_sigma_{sigma}')
+
 
 try:
     os.mkdir('approx_errors')
