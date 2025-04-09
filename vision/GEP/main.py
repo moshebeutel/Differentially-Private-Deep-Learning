@@ -345,7 +345,7 @@ for epoch in range(start_epoch, args.n_epoch):
     #     wandb.log({'perp_factor': perp_history[-1]}, step=epoch)
     history.append([lr, train_loss, train_acc, test_loss, test_acc])
     print('lr: ', lr)
-    if epoch % save_every == save_every - 1:
+    if epoch % save_every == save_every - 1 or epoch == args.n_epoch - 1:
         checkpoint(net, test_acc, epoch, f'{args.sess}_perp_{args.perp}_sigma_{sigma}')
         np.array(history).dump(f'./log/{args.sess}_perp_{args.perp}_sigma_{sigma}_history.npy')
 
