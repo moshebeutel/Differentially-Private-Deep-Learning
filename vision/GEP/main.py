@@ -117,7 +117,8 @@ print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale fo
 
 print('\n==> Creating GEP class instance')
 gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp).cuda()
-
+if args.perp:
+    perp_history = []
 ## attach auxiliary data to GEP instance
 gep.public_inputs = public_inputs
 gep.public_targets = public_targets
@@ -285,7 +286,9 @@ def train(epoch):
     t1 = time.time()
     print('Train loss:%.5f'%(train_loss/steps), 'time: %d s'%(t1-t0), f'train acc: {100. * train_accuracy:.2f}%', end=' ')
     if args.perp:
-        print(f'perp_factor {float(gep.nullspace_factors[0].weight):.4f}')
+        perp_mean = float(gep.nullspace_factors[0].weight.mean())
+        print(f'perp_factor {perp_mean:.4f}')
+        perp_history.append(perp_mean)
     return train_loss / steps, train_accuracy
 
 
@@ -334,6 +337,10 @@ for epoch in range(start_epoch, args.n_epoch):
     print('lr: ', lr)
     if epoch % save_every == save_every - 1:
         checkpoint(net, test_acc, epoch, f'{args.sess}_perp_{args.perp}_sigma_{sigma}')
+        np.array(history).dump(f'./log/{args.sess}_perp_{args.perp}_sigma_{sigma}_history.npy')
+
+        if args.perp:
+            np.array(perp_history).dump(f'./log/{args.sess}_sigma_{sigma}_perp_history.npy')
 
 
 try:
