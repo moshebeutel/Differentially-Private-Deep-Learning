@@ -1,5 +1,7 @@
 import copy
 from collections import OrderedDict
+
+import wandb
 from torch.func import functional_call
 import torch
 import torch.nn as nn
@@ -32,7 +34,7 @@ parser.add_argument('--seed', default=2, type=int, help='random seed')
 parser.add_argument('--weight_decay', default=2e-4, type=float, help='weight decay')
 parser.add_argument('--batchsize', default=500, type=int, help='batch size')
 parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
-parser.add_argument('--lr', default=0.1, type=float, help='base learning rate (default=0.1)')
+parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
 parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 
 
@@ -44,7 +46,7 @@ parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help=
 parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
 
 parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
-parser.add_argument('--clip0', default=5., type=float, help='clipping threshold for gradient embedding')
+parser.add_argument('--clip0', default=1., type=float, help='clipping threshold for gradient embedding')
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
 parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
@@ -333,6 +335,14 @@ for epoch in range(start_epoch, args.n_epoch):
     lr = adjust_learning_rate(optimizer, args.lr, epoch, all_epoch=args.n_epoch)
     train_loss, train_acc = train(epoch)
     test_loss, test_acc = test(epoch)
+    # wandb.log({
+    #     'train_loss': train_loss,
+    #     'train_acc': train_acc,
+    #     'test_loss': test_loss,
+    #     'test_acc': test_acc,
+    #     'lr': lr}, step=epoch)
+    # if args.perp:
+    #     wandb.log({'perp_factor': perp_history[-1]}, step=epoch)
     history.append([lr, train_loss, train_acc, test_loss, test_acc])
     print('lr: ', lr)
     if epoch % save_every == save_every - 1:
