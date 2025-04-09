@@ -111,8 +111,8 @@ print('\n==> Computing noise scale for privacy budget (%.1f, %f)-DP'%(args.eps, 
 sampling_prob=args.batchsize/n_training
 steps = int(args.n_epoch/sampling_prob)
 sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=args.rgp)
-# noise_multiplier0 = noise_multiplier1 = sigma
-noise_multiplier0 = noise_multiplier1 = 0
+noise_multiplier0 = noise_multiplier1 = 0 if args.override else sigma
+print(f'override sigma: {args.override}')
 print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale for residual gradient: ', noise_multiplier1, '\n rgp enabled: ', args.rgp, 'privacy guarantee: ', eps)
 
 print('\n==> Creating GEP class instance')
