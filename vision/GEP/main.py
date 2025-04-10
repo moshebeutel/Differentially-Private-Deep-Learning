@@ -69,6 +69,7 @@ best_acc = 0
 start_epoch = 0  
 batch_size = args.batchsize
 
+
 if(args.seed != -1): 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -116,6 +117,10 @@ sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=args.rgp)
 noise_multiplier0 = noise_multiplier1 = 0 if args.override else sigma
 print(f'override sigma: {args.override}')
 print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale for residual gradient: ', noise_multiplier1, '\n rgp enabled: ', args.rgp, 'privacy guarantee: ', eps)
+
+session = f'{args.sess}_perp_{args.perp}_sigma_{sigma:.3}_lr_{args.lr}_clip0_{args.clip0}_seed_{args.seed}'
+print('session name: ', session)
+
 
 print('\n==> Creating GEP class instance')
 gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp).cuda()
@@ -346,11 +351,11 @@ for epoch in range(start_epoch, args.n_epoch):
     history.append([lr, train_loss, train_acc, test_loss, test_acc])
     print('lr: ', lr)
     if epoch % save_every == save_every - 1 or epoch == args.n_epoch - 1:
-        checkpoint(net, test_acc, epoch, f'{args.sess}_perp_{args.perp}_sigma_{sigma}')
-        np.array(history).dump(f'./log/{args.sess}_perp_{args.perp}_sigma_{sigma}_history.npy')
+        checkpoint(net, test_acc, epoch, session)
+        np.array(history).dump(f'./log/{session}_history.npy')
 
         if args.perp:
-            np.array(perp_history).dump(f'./log/{args.sess}_sigma_{sigma}_perp_history.npy')
+            np.array(perp_history).dump(f'./log/{session}_perp_history.npy')
 
 
 try:
