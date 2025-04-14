@@ -4,6 +4,7 @@ import subprocess
 from functools import partial
 import wandb
 from utils import set_seed
+from main import main
 
 
 def sweep_train(sweep_id, args, train_fn, config=None):
@@ -21,7 +22,7 @@ def sweep_train(sweep_id, args, train_fn, config=None):
 
 
 def init_sweep(config):
-    sweep_id = wandb.sweep(sweep=config, project="key_press_emg_toronto")
+    sweep_id = wandb.sweep(sweep=config, project="GEP")
     return sweep_id
 
 
@@ -53,7 +54,7 @@ parser.add_argument('--momentum', default=0.9, type=float, help='value of moment
 
 
 ## arguments for learning with differential privacy
-parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
+# parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
 parser.add_argument('--override', '-o', action='store_true', help='zero sigma')
 parser.add_argument('--perp', '-v', action='store_true', help='add perpendicular vector')
 parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help='privacy parameter epsilon')
@@ -73,6 +74,7 @@ parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the
 
 args = parser.parse_args()
 
+args.private = True
 
 sweep_configuration = {
     "name": f"GEP_103to110",
@@ -80,13 +82,14 @@ sweep_configuration = {
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
         "lr": {"values": [0.1, 0.01]},
-        "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
-        "clip0": {"values": [1.0, 0.1, 0.01]},
-        "eps": {"values": [8.0, 3.0, 1.0]},
-        "n_epoch": {"values": [30]},
-        "num_bases": {"values": [1000, 1200]},
-        "batchsize": {"values": [512, 256, 128]},
-        "perp": {"values": [True, False]}
+        # "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
+        "seed": {"values": [103, 104, 105]},
+        "clip0": {"values": [5.0, 1.0, 0.1]},
+        "eps": {"values": [8.0, 100.0]},
+        "n_epoch": {"values": [20]},
+        "num_bases": {"values": [1000]},
+        "batchsize": {"values": [512]},
+        "perp": {"values": [True, False]},
     },
 }
 
@@ -94,17 +97,20 @@ def namespace_to_cmd_args(namespace):
     args_list = []
     for key, value in vars(namespace).items():
         if isinstance(value, bool):
-            if value:  # מוסיפים רק אם True
+            if value:
                 args_list.append(f'--{key}')
         else:
             args_list.extend([f'--{key}', str(value)])
     return args_list
 
-def train(args):
-    base_cmd = ['python', 'main.py']
-    cmd_args = namespace_to_cmd_args(args)
-    result = subprocess.run(base_cmd + cmd_args, capture_output=True, text=True)
+# def train(args):
+#     base_cmd = ['python', './vision/GEP/main.py']
+#     cmd_args = namespace_to_cmd_args(args)
+#     main(args)
 
+
+
+wandb.login()
 
 sweep(sweep_config=sweep_configuration, args=args,
-      train_fn=train)
+      train_fn=main)

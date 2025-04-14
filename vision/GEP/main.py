@@ -18,180 +18,55 @@ import time
 import numpy as np
 
 from models import resnet20, GEP
-from utils import get_data_loader, get_sigma, restore_param, sum_list_tensor, flatten_tensor, checkpoint, adjust_learning_rate
+from utils import get_data_loader, get_sigma, restore_param, sum_list_tensor, flatten_tensor, save_checkpoint, adjust_learning_rate
 
 #package for computing individual gradients
 from backpack import backpack, extend
 from backpack.extensions import BatchGrad
 
-parser = argparse.ArgumentParser(description='Differentially Private learning with GEP')
-
-## general arguments
-parser.add_argument('--dataset', default='cifar10', type=str, help='dataset name')
-parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
-parser.add_argument('--seed', default=2, type=int, help='random seed')
-parser.add_argument('--weight_decay', default=2e-4, type=float, help='weight decay')
-parser.add_argument('--batchsize', default=500, type=int, help='batch size')
-parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
-parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
-parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 
 
-## arguments for learning with differential privacy
-parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
-parser.add_argument('--override', '-o', action='store_true', help='zero sigma')
-parser.add_argument('--perp', '-v', action='store_true', help='add perpendicular vector')
-parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help='privacy parameter epsilon')
-parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
+def get_args():
 
-parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
-parser.add_argument('--clip0', default=5., type=float, help='clipping threshold for gradient embedding')
-parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
-parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
-parser.add_argument('--num_groups', default=3, type=int, help='number of parameters groups')
-parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
+    parser = argparse.ArgumentParser(description='Differentially Private learning with GEP')
 
-parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
-parser.add_argument('--aux_dataset', default='imagenet', type=str, help='name of the public dataset, [cifar10, cifar100, imagenet]')
-parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
+    ## general arguments
+    parser.add_argument('--dataset', default='cifar10', type=str, help='dataset name')
+    parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
+    parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
+    parser.add_argument('--seed', default=2, type=int, help='random seed')
+    parser.add_argument('--weight_decay', default=2e-4, type=float, help='weight decay')
+    parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
+    parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
+    parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
+    parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 
 
-args = parser.parse_args()
+    ## arguments for learning with differential privacy
+    parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
+    parser.add_argument('--override', '-o', action='store_true', help='zero sigma')
+    parser.add_argument('--perp', '-v', action='store_true', help='add perpendicular vector')
+    parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help='privacy parameter epsilon')
+    parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
 
-assert args.dataset in ['cifar10', 'svhn']
-assert args.aux_dataset in ['cifar10', 'cifar100', 'imagenet']
-if(args.real_labels):
-    assert args.aux_dataset == 'cifar10'
+    parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
+    parser.add_argument('--clip0', default=5., type=float, help='clipping threshold for gradient embedding')
+    parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
+    parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
+    parser.add_argument('--num_groups', default=3, type=int, help='number of parameters groups')
+    parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 
-use_cuda = True
-best_acc = 0  
-start_epoch = 0  
-batch_size = args.batchsize
-
-
-if(args.seed != -1): 
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
-
-print('==> Preparing data..')
-## preparing data for training && testing
-if(args.dataset == 'svhn'):  ## For SVHN, we concatenate training samples and extra samples to build the training set.
-    trainloader, extraloader, testloader, n_training, n_test = get_data_loader('svhn', batchsize = args.batchsize)
-    for train_samples, train_labels in trainloader:
-        break
-    for extra_samples, extra_labels in extraloader:
-        break
-    train_samples = torch.cat([train_samples, extra_samples], dim=0)
-    train_labels = torch.cat([train_labels, extra_labels], dim=0)
-
-else:
-    trainloader, testloader, n_training, n_test = get_data_loader('cifar10', batchsize = args.batchsize)
-    train_samples, train_labels = None, None
-## preparing auxiliary data
-num_public_examples = args.aux_data_size
-if('cifar' in args.aux_dataset):
-    if(args.aux_dataset == 'cifar100'):
-        transform_test = torchvision.transforms.Compose([
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
-        testset = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
-    public_data_loader = torch.utils.data.DataLoader(testset, batch_size=num_public_examples, shuffle=False, num_workers=2) #
-    for public_inputs, public_targets in public_data_loader:
-        break
-else:
-    public_inputs = torch.load('/home/user1/GIT/Differentially-Private-Deep-Learning/vision/GEP/imagenet_examples_2000')[:num_public_examples]
-if(not args.real_labels):
-    public_targets = torch.randint(high=10, size=(num_public_examples,))
-public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
-print('# of training examples: ', n_training, '# of testing examples: ', n_test, '# of auxiliary examples: ', num_public_examples)
+    parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
+    parser.add_argument('--aux_dataset', default='imagenet', type=str, help='name of the public dataset, [cifar10, cifar100, imagenet]')
+    parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
 
 
-print('\n==> Computing noise scale for privacy budget (%.1f, %f)-DP'%(args.eps, args.delta))
-sampling_prob=args.batchsize/n_training
-steps = int(args.n_epoch/sampling_prob)
-sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=args.rgp)
-noise_multiplier0 = noise_multiplier1 = 0 if args.override else sigma
-print(f'override sigma: {args.override}')
-print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale for residual gradient: ', noise_multiplier1, '\n rgp enabled: ', args.rgp, 'privacy guarantee: ', eps)
-
-session = f'{args.sess}_perp_{args.perp}_sigma_{sigma:.3}_lr_{args.lr}_clip0_{args.clip0}_seed_{args.seed}'
-print('session name: ', session)
+    args = parser.parse_args()
+    return args
 
 
-print('\n==> Creating GEP class instance')
-gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp)
-if args.perp:
-    perp_history = []
-## attach auxiliary data to GEP instance
-gep.public_inputs = public_inputs
-gep.public_targets = public_targets
-
-print('\n==> Creating ResNet20 model instance')
-if(args.resume):
-    try:
-        assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-        checkpoint_file = './checkpoint/' + args.sess  + '.ckpt'
-        checkpoint = torch.load(checkpoint_file)
-        net = resnet20()
-        net.cuda()
-        restore_param(net.state_dict(), checkpoint['net'])
-        best_acc = checkpoint['acc']
-        start_epoch = checkpoint['epoch'] + 1
-        torch.set_rng_state(checkpoint['rng_state'])
-        approx_error = checkpoint['approx_error']
-    except:
-        print('resume from checkpoint failed')
-else:
-    net = resnet20() 
-    net.cuda()
-
-net = extend(net)
-
-
-
-num_params = 0
-for p in net.parameters():
-    num_params += p.numel()
-
-print('total number of parameters: ', num_params/(10**6), 'M')
-
-if(args.private):
-    loss_func = nn.CrossEntropyLoss(reduction='sum')
-else:
-    loss_func = nn.CrossEntropyLoss(reduction='mean')
-
-loss_func = extend(loss_func)
-
-num_params = 0
-np_list = []
-for p in net.parameters():
-    num_params += p.numel()
-    np_list.append(p.numel())
-
-def group_params(num_p, groups):
-    assert groups >= 1
-
-    p_per_group = num_p//groups
-    num_param_list = [p_per_group] * (groups-1)
-    num_param_list = num_param_list + [num_p-sum(num_param_list)]
-    return num_param_list
-net.gep = gep
-print('\n==> Dividing parameters in to %d groups'%args.num_groups)
-gep.num_public_examples = num_public_examples
-gep.num_param_list = group_params(num_params, args.num_groups)
-gep.cuda()
-optimizer = optim.SGD(
-        net.parameters(),
-        lr=args.lr, 
-        momentum=args.momentum, 
-        weight_decay=args.weight_decay)
-
-
-def train(epoch):
+def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
+          noise_multiplier0, noise_multiplier1, use_cuda, optimizer,loss_func, perp_history=None):
     print('\nEpoch: %d' % epoch)
     net.train()
     train_loss = 0
@@ -300,7 +175,7 @@ def train(epoch):
     return train_loss / steps, train_accuracy
 
 
-def test(epoch):
+def test(args, epoch, net, testloader, use_cuda, loss_func, sigma):
     global best_acc
     net.eval()
     test_loss = 0
@@ -326,44 +201,186 @@ def test(epoch):
 
         acc = 100.*float(correct)/float(total)
         print('test loss:%.5f'%(test_loss/(batch_idx+1)), 'test acc:', acc)
-        ## Save checkpoint.
-        if acc > best_acc:
-            best_acc = acc
-            checkpoint(net, acc, epoch, f'{args.sess}_perp_{args.perp}_sigma_{sigma}')
+
 
     return (test_loss/batch_idx, acc)
 
+def main(args):
+    assert args.dataset in ['cifar10', 'svhn']
+    assert args.aux_dataset in ['cifar10', 'cifar100', 'imagenet']
+    if (args.real_labels):
+        assert args.aux_dataset == 'cifar10'
 
-print('\n==> Strat training')
-history = []
-save_every = 10
-for epoch in range(start_epoch, args.n_epoch):
-    lr = adjust_learning_rate(optimizer, args.lr, epoch, all_epoch=args.n_epoch)
-    train_loss, train_acc = train(epoch)
-    test_loss, test_acc = test(epoch)
-    # wandb.log({
-    #     'train_loss': train_loss,
-    #     'train_acc': train_acc,
-    #     'test_loss': test_loss,
-    #     'test_acc': test_acc,
-    #     'lr': lr}, step=epoch)
-    # if args.perp:
-    #     wandb.log({'perp_factor': perp_history[-1]}, step=epoch)
-    history.append([lr, train_loss, train_acc, test_loss, test_acc])
-    print('lr: ', lr)
-    if epoch % save_every == save_every - 1 or epoch == args.n_epoch - 1:
-        checkpoint(net, test_acc, epoch, session)
-        np.array(history).dump(f'./log/{session}_history.npy')
+    use_cuda = True
+    best_acc = 0
+    start_epoch = 0
+    batch_size = args.batchsize
 
+    if (args.seed != -1):
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        random.seed(args.seed)
+
+    print('==> Preparing data..')
+    ## preparing data for training && testing
+    if (
+            args.dataset == 'svhn'):  ## For SVHN, we concatenate training samples and extra samples to build the training set.
+        trainloader, extraloader, testloader, n_training, n_test = get_data_loader('svhn', batchsize=args.batchsize)
+        for train_samples, train_labels in trainloader:
+            break
+        for extra_samples, extra_labels in extraloader:
+            break
+        train_samples = torch.cat([train_samples, extra_samples], dim=0)
+        train_labels = torch.cat([train_labels, extra_labels], dim=0)
+
+    else:
+        trainloader, testloader, n_training, n_test = get_data_loader('cifar10', batchsize=args.batchsize)
+        train_samples, train_labels = None, None
+    ## preparing auxiliary data
+    num_public_examples = args.aux_data_size
+    if ('cifar' in args.aux_dataset):
+        if (args.aux_dataset == 'cifar100'):
+            transform_test = torchvision.transforms.Compose([
+                torchvision.transforms.ToTensor(),
+                torchvision.transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ])
+            testset = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
+        public_data_loader = torch.utils.data.DataLoader(testset, batch_size=num_public_examples, shuffle=False,
+                                                         num_workers=2)  #
+        for public_inputs, public_targets in public_data_loader:
+            break
+    else:
+        public_inputs = torch.load(
+            '/home/user1/GIT/Differentially-Private-Deep-Learning/vision/GEP/imagenet_examples_2000')[
+                        :num_public_examples]
+    if (not args.real_labels):
+        public_targets = torch.randint(high=10, size=(num_public_examples,))
+    public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
+    print('# of training examples: ', n_training, '# of testing examples: ', n_test, '# of auxiliary examples: ',
+          num_public_examples)
+
+    print('\n==> Computing noise scale for privacy budget (%.1f, %f)-DP' % (args.eps, args.delta))
+    sampling_prob = args.batchsize / n_training
+    steps = int(args.n_epoch / sampling_prob)
+    sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=args.rgp)
+    noise_multiplier0 = noise_multiplier1 = 0 if args.override else sigma
+    print(f'override sigma: {args.override}')
+    print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale for residual gradient: ',
+          noise_multiplier1, '\n rgp enabled: ', args.rgp, 'privacy guarantee: ', eps)
+
+    session = f'{args.sess}_perp_{args.perp}_sigma_{sigma:.3}_lr_{args.lr}_clip0_{args.clip0}_seed_{args.seed}'
+    print('session name: ', session)
+
+    print('\n==> Creating GEP class instance')
+    gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp)
+    if args.perp:
+        perp_history = []
+    ## attach auxiliary data to GEP instance
+    gep.public_inputs = public_inputs
+    gep.public_targets = public_targets
+
+    print('\n==> Creating ResNet20 model instance')
+    if (args.resume):
+        try:
+            assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
+            checkpoint_file = './checkpoint/' + args.sess + '.ckpt'
+            checkpoint = torch.load(checkpoint_file)
+            net = resnet20()
+            net.cuda()
+            restore_param(net.state_dict(), checkpoint['net'])
+            best_acc = checkpoint['acc']
+            start_epoch = checkpoint['epoch'] + 1
+            torch.set_rng_state(checkpoint['rng_state'])
+            approx_error = checkpoint['approx_error']
+        except:
+            print('resume from checkpoint failed')
+    else:
+        net = resnet20()
+        net.cuda()
+
+    net = extend(net)
+
+    num_params = 0
+    for p in net.parameters():
+        num_params += p.numel()
+
+    print('total number of parameters: ', num_params / (10 ** 6), 'M')
+
+    if (args.private):
+        loss_func = nn.CrossEntropyLoss(reduction='sum')
+    else:
+        loss_func = nn.CrossEntropyLoss(reduction='mean')
+
+    loss_func = extend(loss_func)
+
+    num_params = 0
+    np_list = []
+    for p in net.parameters():
+        num_params += p.numel()
+        np_list.append(p.numel())
+
+    def group_params(num_p, groups):
+        assert groups >= 1
+
+        p_per_group = num_p // groups
+        num_param_list = [p_per_group] * (groups - 1)
+        num_param_list = num_param_list + [num_p - sum(num_param_list)]
+        return num_param_list
+
+    net.gep = gep
+    print('\n==> Dividing parameters in to %d groups' % args.num_groups)
+    gep.num_public_examples = num_public_examples
+    gep.num_param_list = group_params(num_params, args.num_groups)
+    gep.cuda()
+    optimizer = optim.SGD(
+        net.parameters(),
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay)
+    print('\n==> Strat training')
+    history = []
+    save_every = 10
+    wandb.init(project='GEP', name=session)
+    for epoch in range(start_epoch, args.n_epoch):
+        # lr = adjust_learning_rate(optimizer, args.lr, epoch, all_epoch=args.n_epoch)
+        lr = args.lr
+        train_loss, train_acc = train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
+          noise_multiplier0, noise_multiplier1, use_cuda, optimizer,loss_func,
+                                      perp_history=None if not args.perp else perp_history)
+        test_loss, test_acc = test(args, epoch, net, testloader, use_cuda, loss_func, sigma=noise_multiplier0)
+        ## Save checkpoint.
+        if test_acc > best_acc:
+            best_acc = test_acc
+            save_checkpoint(net, test_acc, epoch, session)
+        wandb.log({
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'test_loss': test_loss,
+            'test_acc': test_acc,
+            'lr': lr}, step=epoch)
         if args.perp:
-            np.array(perp_history).dump(f'./log/{session}_perp_history.npy')
+            wandb.log({'perp_factor': perp_history[-1]}, step=epoch)
+        history.append([lr, train_loss, train_acc, test_loss, test_acc])
+        print('lr: ', lr)
+        if epoch % save_every == save_every - 1 or epoch == args.n_epoch - 1:
+            save_checkpoint(net, test_acc, epoch, session)
+            np.array(history).dump(f'./log/{session}_history.npy')
+
+            if args.perp:
+                np.array(perp_history).dump(f'./log/{session}_perp_history.npy')
 
 
-try:
-    os.mkdir('approx_errors')
-except:
-    pass
-import pickle
-bfile=open('approx_errors/'+args.sess+'.pickle', 'wb')
-pickle.dump(net.gep.approx_error, bfile)
-bfile.close()
+    try:
+        os.mkdir('approx_errors')
+    except:
+        pass
+    import pickle
+    bfile=open('approx_errors/'+args.sess+'.pickle', 'wb')
+    pickle.dump(net.gep.approx_error, bfile)
+    bfile.close()
+
+
+if __name__ == '__main__':
+    args = get_args()
+    main(args)

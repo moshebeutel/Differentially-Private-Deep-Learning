@@ -99,7 +99,7 @@ def flatten_tensor(tensor_list):
     return flatten_param
 
 
-def checkpoint(net, acc, epoch, sess):
+def save_checkpoint(net, acc, epoch, sess):
     state = {
         'net': net.state_dict(),
         'acc': acc,

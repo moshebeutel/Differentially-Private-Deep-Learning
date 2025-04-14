@@ -16,7 +16,7 @@ from tqdm import trange
 
 from models.resnet_cifar import resnet20, resnet20halfparams
 from models.nonlinear_basis_matching import UNetGEP
-from utils import get_data_loader, get_sigma, restore_param, flatten_tensor, checkpoint, adjust_learning_rate
+from utils import get_data_loader, get_sigma, restore_param, flatten_tensor, save_checkpoint, adjust_learning_rate
 
 parser = argparse.ArgumentParser(description='Differentially Private learning with GEP')
 
@@ -310,7 +310,7 @@ def test(epoch):
         ## Save checkpoint.
         if acc > best_acc:
             best_acc = acc
-            checkpoint(net, acc, epoch, args.sess)
+            save_checkpoint(net, acc, epoch, args.sess)
 
     return (test_loss/batch_idx, acc)
 
