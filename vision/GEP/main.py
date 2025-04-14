@@ -46,10 +46,10 @@ parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help=
 parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
 
 parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
-parser.add_argument('--clip0', default=1., type=float, help='clipping threshold for gradient embedding')
+parser.add_argument('--clip0', default=5., type=float, help='clipping threshold for gradient embedding')
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
-parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
+parser.add_argument('--num_groups', default=3, type=int, help='number of parameters groups')
 parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 
 parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
@@ -123,7 +123,7 @@ print('session name: ', session)
 
 
 print('\n==> Creating GEP class instance')
-gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp).cuda()
+gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp)
 if args.perp:
     perp_history = []
 ## attach auxiliary data to GEP instance
@@ -181,8 +181,9 @@ def group_params(num_p, groups):
     return num_param_list
 net.gep = gep
 print('\n==> Dividing parameters in to %d groups'%args.num_groups)
+gep.num_public_examples = num_public_examples
 gep.num_param_list = group_params(num_params, args.num_groups)
-
+gep.cuda()
 optimizer = optim.SGD(
         net.parameters(),
         lr=args.lr, 
@@ -293,9 +294,9 @@ def train(epoch):
     t1 = time.time()
     print('Train loss:%.5f'%(train_loss/steps), 'time: %d s'%(t1-t0), f'train acc: {100. * train_accuracy:.2f}%', end=' ')
     if args.perp:
-        perp_mean = float(gep.nullspace_factors[0].weight.mean())
-        print(f'perp_factor {perp_mean:.4f}')
-        perp_history.append(perp_mean)
+        perp_norm = sum([float(torch.linalg.norm(factor.weight)) for factor in gep.nullspace_factors])
+        print(f'perp_factor {perp_norm:.4f}')
+        perp_history.append(perp_norm)
     return train_loss / steps, train_accuracy
 
 

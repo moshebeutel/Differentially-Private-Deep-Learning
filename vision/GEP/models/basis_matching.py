@@ -102,14 +102,11 @@ def get_bases_svd(pub_grad: torch.Tensor, num_bases: int) -> tuple[torch.Tensor,
     return Vh, num_bases, error_rate
 
 class LinearCombination(nn.Module):
-    def __init__(self, num_dim, num_bases):
+    def __init__(self, num_bases):
         super(LinearCombination, self).__init__()
         self.weight = nn.Parameter(torch.empty(1,num_bases))
         nn.init.kaiming_normal_(self.weight)
-        self.num_dim = num_dim
     def forward(self, in_vec, perp_bases):
-        assert in_vec.shape[1] == self.num_dim, (f'Expected in_vec.shape[1] == {self.num_dim} dimension,'
-                                           f' but got {in_vec.shape[1]}')
 
         assert perp_bases.shape[1] == self.weight.shape[1], \
             f'Expected perp_bases.shape[1] == self.weight.shape[1] but {perp_bases.shape[1]} != {self.weight.shape[1]}'
@@ -132,14 +129,29 @@ class GEP(nn.Module):
         self.selected_bases_perp_list: list[torch.Tensor] = []
         self.centers: list[torch.Tensor] = []
         self.add_perp_vector = add_perp_vector
+        self.num_bases = num_bases
+        self.num_bases_list: list[int] = [num_bases]
+        self._num_param_list = [268346]
 
-        num_param_list = [268346]
-        num_groups = len(num_param_list)
 
-        if add_perp_vector:
-            self.nullspace_factors = nn.ModuleList([LinearCombination(num_dim=num_param, num_bases=num_bases)
-                                                    for num_param in num_param_list])
-            initialize_weights(self)
+    @property
+    def num_param_list(self):
+        return self._num_param_list
+    @num_param_list.setter
+    def num_param_list(self, value):
+        self._num_param_list = value
+        assert hasattr(self, 'num_public_examples'), f'Expected definition of num_public_examples'
+        assert isinstance(value, list), f'Expected value to be a list, but got {type(value)}'
+        assert len(value) > 0, f'Expected value to be non-empty, but got {value}'
+        sqrt_num_param_list = np.sqrt(np.array(value))
+        num_bases_list: np.ndarray[int] = self.num_bases * (sqrt_num_param_list / np.sum(sqrt_num_param_list))
+        num_bases_list = num_bases_list.astype(int)
+
+        if self.add_perp_vector:
+            self.nullspace_factors = nn.ModuleList([LinearCombination(num_bases=self.num_public_examples - num_bases) for num_bases in num_bases_list])
+        # initialize_weights(self)
+
+        self.num_bases_list = num_bases_list.tolist()
 
     def get_approx_grad(self, embedding):
         bases_list, num_bases_list, num_param_list = self.selected_bases_list, self.num_bases_list, self.num_param_list
