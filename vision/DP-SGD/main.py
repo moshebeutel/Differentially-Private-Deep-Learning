@@ -13,120 +13,45 @@ import time
 import numpy as np
 
 from models import resnet20
-from utils import get_data_loader, get_sigma, restore_param, checkpoint, adjust_learning_rate, process_grad_batch
+from utils import get_data_loader, get_sigma, restore_param, adjust_learning_rate, process_grad_batch, save_checkpoint
 
 #package for computing individual gradients
 from backpack import backpack, extend
 from backpack.extensions import BatchGrad
 
-parser = argparse.ArgumentParser(description='Differentially Private learning with DP-SGD')
-
-## general arguments
-parser.add_argument('--dataset', default='cifar10', type=str, help='dataset name')
-parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
-parser.add_argument('--seed', default=2, type=int, help='random seed')
-parser.add_argument('--weight_decay', default=0., type=float, help='weight decay')
-parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
-parser.add_argument('--n_epoch', default=100, type=int, help='total number of epochs')
-parser.add_argument('--lr', default=0.1, type=float, help='base learning rate (default=0.1)')
-parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
+import wandb
 
 
-## arguments for learning with differential privacy
-parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
-parser.add_argument('--clip', default=5., type=float, help='gradient clipping bound')
-parser.add_argument('--eps', default=8., type=float, help='privacy parameter epsilon')
-parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
+def get_args():
+    parser = argparse.ArgumentParser(description='Differentially Private learning with DP-SGD')
+
+    ## general arguments
+    parser.add_argument('--dataset', default='cifar10', type=str, help='dataset name')
+    parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
+    parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
+    parser.add_argument('--seed', default=2, type=int, help='random seed')
+    parser.add_argument('--weight_decay', default=0., type=float, help='weight decay')
+    parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
+    parser.add_argument('--n_epoch', default=100, type=int, help='total number of epochs')
+    parser.add_argument('--lr', default=0.1, type=float, help='base learning rate (default=0.1)')
+    parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
+
+
+    ## arguments for learning with differential privacy
+    parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
+    parser.add_argument('--clip', default=5., type=float, help='gradient clipping bound')
+    parser.add_argument('--eps', default=8., type=float, help='privacy parameter epsilon')
+    parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
 
 
 
-args = parser.parse_args()
-
-assert args.dataset in ['cifar10', 'svhn']
-
-use_cuda = True
-best_acc = 0  
-start_epoch = 0  
-batch_size = args.batchsize
-
-if(args.seed != -1): 
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
-
-print('==> Preparing data..')
-## preparing data for training && testing
-if(args.dataset == 'svhn'):  ## For SVHN, we concatenate training samples and extra samples to build the training set.
-    trainloader, extraloader, testloader, n_training, n_test = get_data_loader('svhn', batchsize = args.batchsize)
-    for train_samples, train_labels in trainloader:
-        break
-    for extra_samples, extra_labels in extraloader:
-        break
-    train_samples = torch.cat([train_samples, extra_samples], dim=0)
-    train_labels = torch.cat([train_labels, extra_labels], dim=0)
-
-else:
-    trainloader, testloader, n_training, n_test = get_data_loader('cifar10', batchsize = args.batchsize)
-    train_samples, train_labels = None, None
-
-print('# of training examples: ', n_training, '# of testing examples: ', n_test)
+    args = parser.parse_args()
+    return args
 
 
-print('\n==> Computing noise scale for privacy budget (%.1f, %f)-DP'%(args.eps, args.delta))
-sampling_prob=args.batchsize/n_training
-steps = int(args.n_epoch/sampling_prob)
-sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=False)
-noise_multiplier = sigma
-print('noise scale: ', noise_multiplier, 'privacy guarantee: ', eps)
 
-print('\n==> Creating ResNet20 model instance')
-if(args.resume):
-    try:
-        assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-        checkpoint_file = './checkpoint/' + args.sess  + '.ckpt'
-        checkpoint = torch.load(checkpoint_file)
-        net = resnet20()
-        net.cuda()
-        restore_param(net.state_dict(), checkpoint['net'])
-        best_acc = checkpoint['acc']
-        start_epoch = checkpoint['epoch'] + 1
-        torch.set_rng_state(checkpoint['rng_state'])
-    except:
-        print('resume from checkpoint failed')
-else:
-    net = resnet20() 
-    net.cuda()
-
-net = extend(net)
-
-num_params = 0
-for p in net.parameters():
-    num_params += p.numel()
-
-print('total number of parameters: ', num_params/(10**6), 'M')
-
-if(args.private):
-    loss_func = nn.CrossEntropyLoss(reduction='sum')
-else:
-    loss_func = nn.CrossEntropyLoss(reduction='mean')
-
-loss_func = extend(loss_func)
-
-num_params = 0
-np_list = []
-for p in net.parameters():
-    num_params += p.numel()
-    np_list.append(p.numel())
-
-optimizer = optim.SGD(
-        net.parameters(), 
-        lr=args.lr, 
-        momentum=args.momentum, 
-        weight_decay=args.weight_decay)
-
-def train(epoch):
+def train(args, epoch, net, n_training, trainloader, train_samples, train_labels,
+          noise_multiplier, use_cuda, optimizer,loss_func):
     print('\nEpoch: %d' % epoch)
     net.train()
     train_loss = 0
@@ -151,6 +76,8 @@ def train(epoch):
             inputs, targets = inputs.cuda(), targets.cuda()
 
         if(args.private):
+            # print(' >>>> PRIVATE  >>>')
+
             logging = batch_idx % 20 == 0
             optimizer.zero_grad()
             outputs = net(inputs)
@@ -164,7 +91,9 @@ def train(epoch):
                     numel = p.grad.numel()
                     grad_noise = torch.normal(0, noise_multiplier*args.clip/args.batchsize, size=p.grad.shape, device=p.grad.device)
                     p.grad.data += grad_noise
+            # print(' <<<< PRIVATE  <<< ')
         else:
+            # print('NOT PRIVATE')
             optimizer.zero_grad()
             outputs = net(inputs)
             loss = loss_func(outputs, targets)
@@ -188,7 +117,7 @@ def train(epoch):
     return (train_loss/batch_idx, acc)
 
 
-def test(epoch):
+def test(args, epoch, net, testloader, use_cuda, loss_func):
     global best_acc
     net.eval()
     test_loss = 0
@@ -214,17 +143,125 @@ def test(epoch):
 
         acc = 100.*float(correct)/float(total)
         print('test loss:%.5f'%(test_loss/(batch_idx+1)), 'test acc:', acc)
-        ## Save checkpoint.
-        if acc > best_acc:
-            best_acc = acc
-            checkpoint(net, acc, epoch, args.sess)
+
 
     return (test_loss/batch_idx, acc)
 
 
-print('\n==> Strat training')
+def main(args):
+    assert args.dataset in ['cifar10', 'svhn']
 
-for epoch in range(start_epoch, args.n_epoch):
-    lr = adjust_learning_rate(optimizer, args.lr, epoch, all_epoch=args.n_epoch)
-    train_loss, train_acc = train(epoch)
-    test_loss, test_acc = test(epoch)
+    use_cuda = True
+    best_acc = 0
+    start_epoch = 0
+    batch_size = args.batchsize
+
+    if (args.seed != -1):
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        random.seed(args.seed)
+
+    print('==> Preparing data..')
+    ## preparing data for training && testing
+    if (
+            args.dataset == 'svhn'):  ## For SVHN, we concatenate training samples and extra samples to build the training set.
+        trainloader, extraloader, testloader, n_training, n_test = get_data_loader('svhn', batchsize=args.batchsize)
+        for train_samples, train_labels in trainloader:
+            break
+        for extra_samples, extra_labels in extraloader:
+            break
+        train_samples = torch.cat([train_samples, extra_samples], dim=0)
+        train_labels = torch.cat([train_labels, extra_labels], dim=0)
+
+    else:
+        trainloader, testloader, n_training, n_test = get_data_loader('cifar10', batchsize=args.batchsize)
+        train_samples, train_labels = None, None
+
+    print('# of training examples: ', n_training, '# of testing examples: ', n_test)
+
+    print('\n==> Computing noise scale for privacy budget (%.1f, %f)-DP' % (args.eps, args.delta))
+    sampling_prob = args.batchsize / n_training
+    steps = int(args.n_epoch / sampling_prob)
+    sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=False)
+    noise_multiplier = sigma
+    print('noise scale: ', noise_multiplier, 'privacy guarantee: ', eps)
+
+    session = f'{args.sess}_perp_{args.perp}_sigma_{sigma:.3}_lr_{args.lr}_clip_{args.clip}_seed_{args.seed}'
+    print('session name: ', session)
+    print('PRIVATE ?', args.private)
+
+
+    print('\n==> Creating ResNet20 model instance')
+    if (args.resume):
+        try:
+            assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
+            checkpoint_file = './checkpoint/' + args.sess + '.ckpt'
+            checkpoint = torch.load(checkpoint_file)
+            net = resnet20()
+            net.cuda()
+            restore_param(net.state_dict(), checkpoint['net'])
+            best_acc = checkpoint['acc']
+            start_epoch = checkpoint['epoch'] + 1
+            torch.set_rng_state(checkpoint['rng_state'])
+        except:
+            print('resume from checkpoint failed')
+    else:
+        net = resnet20()
+        net.cuda()
+
+    net = extend(net)
+
+    num_params = 0
+    for p in net.parameters():
+        num_params += p.numel()
+
+    print('total number of parameters: ', num_params / (10 ** 6), 'M')
+
+    if (args.private):
+        loss_func = nn.CrossEntropyLoss(reduction='sum')
+    else:
+        loss_func = nn.CrossEntropyLoss(reduction='mean')
+
+    loss_func = extend(loss_func)
+
+    num_params = 0
+    np_list = []
+    for p in net.parameters():
+        num_params += p.numel()
+        np_list.append(p.numel())
+
+    optimizer = optim.SGD(
+        net.parameters(),
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay)
+
+    print('\n==> Strat training')
+    history = []
+    save_every = 10
+    wandb.init(project='GEP', name=session)
+    for epoch in range(start_epoch, args.n_epoch):
+        # lr = adjust_learning_rate(optimizer, args.lr, epoch, all_epoch=args.n_epoch)
+        lr = args.lr
+        train_loss, train_acc = train(args, epoch, net, n_training, trainloader, train_samples, train_labels,
+                                      noise_multiplier, use_cuda, optimizer, loss_func)
+        test_loss, test_acc = test(args, epoch, net, testloader, use_cuda, loss_func)
+        ## Save checkpoint.
+        if test_acc > best_acc:
+            best_acc = test_acc
+            save_checkpoint(net, test_acc, epoch, session)
+        wandb.log({
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'test_loss': test_loss,
+            'test_acc': test_acc,
+            'lr': lr}, step=epoch)
+
+        history.append([lr, train_loss, train_acc, test_loss, test_acc])
+        print('lr: ', lr)
+        if epoch % save_every == save_every - 1 or epoch == args.n_epoch - 1:
+            save_checkpoint(net, test_acc, epoch, session)
+            np.array(history).dump(f'./log/{session}_history.npy')
+
+

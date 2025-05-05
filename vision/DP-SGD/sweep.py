@@ -61,8 +61,7 @@ parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help=
 parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
 
 parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
-parser.add_argument('--clip0', default=1., type=float, help='clipping threshold for gradient embedding')
-parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
+parser.add_argument('--clip', default=1., type=float, help='clipping threshold for gradient embedding')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
 parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
 parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
@@ -77,21 +76,21 @@ args = parser.parse_args()
 args.private = True
 
 sweep_configuration = {
-    "name": f"GEP_103to110",
+    "name": f"DP_SGD    _103to110",
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
         "lr": {"values": [0.1, 0.01]},
         # "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
         "seed": {"values": [103, 104, 105]},
-        "clip0": {"values": [5.0, 1.0, 0.1]},
-        # "clip0": {"values": [5.0, 1.0, 0.1]},
-        "eps": {"values": [1.0]},
+        # "clip0": {"values": [1.0, 0.1]},
+        "clip": {"values": [5.0, 1.0, 0.1]},
+        "eps": {"values": [3.0, 1.0]},
         # "eps": {"values": [8.0, 100.0]},
         "n_epoch": {"values": [20]},
         "num_bases": {"values": [1000]},
         "batchsize": {"values": [1024]},
-        "perp": {"values": [True, False]},
+        # "perp": {"values": [True, False]},
     },
 }
 
