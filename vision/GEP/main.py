@@ -247,7 +247,7 @@ def main(args):
             break
     else:
         public_inputs = torch.load(
-            '/home/user1/GIT/Differentially-Private-Deep-Learning/vision/GEP/imagenet_examples_2000')[
+            './vision/GEP/imagenet_examples_2000')[
                         :num_public_examples]
     if (not args.real_labels):
         public_targets = torch.randint(high=10, size=(num_public_examples,))

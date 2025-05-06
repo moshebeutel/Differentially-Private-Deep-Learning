@@ -75,25 +75,30 @@ parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the
 args = parser.parse_args()
 
 args.private = True
+perp = args.perp
+override = args.override
+
+
 
 sweep_configuration = {
-    "name": f"GEP_103_num_groups_3",
+    "name": f"GEP_103to105_{'Perp' if perp else 'NoPerp'}",
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
-        # "lr": {"values": [0.0001]},
-        "lr": {"values": [0.001]},
+        "lr": {"values": [0.0001]},
+        # "lr": {"values": [0.1, 0.01]},
         # "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
         # "seed": {"values": [103, 104, 105]},
-        "seed": {"values": [104]},
+        "num_groups": {"values": [3]},
+        "seed": {"values": [2]},
         "clip0": {"values": [5.0]},
+        # "clip0": {"values": [5.0, 1.0, 0.1]},
         "eps": {"values": [8.0]},
-        "n_epoch": {"values": [5]},
-        "num_groups": {"values": [1]},
+        "n_epoch": {"values": [200]},
         "num_bases": {"values": [1000]},
-        "batchsize": {"values": [64, 32]},
-        "perp": {"values": [True, False]},
-        # "perp": {"values": [False]},
+        "batchsize": {"values": [1000]},
+        "perp": {"values": [perp]},
+        "override": {"values": [override]}
     },
 }
 
