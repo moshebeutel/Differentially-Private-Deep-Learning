@@ -24,6 +24,7 @@ from utils import get_data_loader, get_sigma, restore_param, sum_list_tensor, fl
 from backpack import backpack, extend
 from backpack.extensions import BatchGrad
 
+# from models.cifar10_net import cifar10Net, TinyCifarNet
 
 
 def get_args():
@@ -34,6 +35,7 @@ def get_args():
     parser.add_argument('--dataset', default='cifar10', type=str, help='dataset name')
     parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
     parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
+    # parser.add_argument('--sess', default='TinyCifar_cifar10', type=str, help='session name')
     parser.add_argument('--seed', default=2, type=int, help='random seed')
     parser.add_argument('--weight_decay', default=2e-4, type=float, help='weight decay')
     parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
@@ -132,29 +134,29 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                 if p.grad is not None:
                     shape = p.grad.shape
                     numel = p.grad.numel()
-                    new_params[n] = torch.add(p, torch.mul(args.lr , torch.reshape(noisy_grad[offset:offset+numel], shape)))
-                    p.grad.data = noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
+                    new_params[n] = torch.add(p, torch.mul(args.lr , torch.reshape(noisy_grad[offset:offset+numel], shape)), alpha=-1.0)
+                    # p.grad.data = noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
                     # p =  p + args.lr * noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
-                    # p.grad = None
+                    p.grad = None
                     offset+=numel
             if gep.add_perp_vector:
+                for group_num in range(args.num_groups):
+                    new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
                 outputs = functional_call(net, new_params, (inputs, ))
                 loss = loss_func(outputs, targets)
                 loss.backward()
-                new_params['gep.nullspace_factors.0.weight'] = gep.nullspace_factors[0].weight
-                # net.load_state_dict(new_params)
-        else:
+                # for group_num in range(args.num_groups):
+                #     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
+            optimizer.step()
+            net.load_state_dict(new_params)
+
+        else:  # not args.private
             optimizer.zero_grad()
             outputs = net(inputs)
             loss = loss_func(outputs, targets)
             loss.backward()
-            try:
-                for p in net.parameters():
-                    del p.grad_batch
-            except:
-                pass
+            optimizer.step()
 
-        optimizer.step()
         step_loss = loss.item()
         if(args.private):
             step_loss /= inputs.shape[0]
@@ -192,7 +194,7 @@ def test(args, epoch, net, testloader, use_cuda, loss_func, sigma):
             if(args.private):
                 step_loss /= inputs.shape[0]
 
-            test_loss += step_loss 
+            test_loss += step_loss
             _, predicted = torch.max(outputs.data, 1)
             total += targets.size(0)
             correct_idx = predicted.eq(targets.data).cpu()
@@ -287,6 +289,8 @@ def main(args):
             checkpoint_file = './checkpoint/' + args.sess + '.ckpt'
             checkpoint = torch.load(checkpoint_file)
             net = resnet20()
+            # net = cifar10Net()
+            # net = TinyCifarNet()
             net.cuda()
             restore_param(net.state_dict(), checkpoint['net'])
             best_acc = checkpoint['acc']
@@ -297,6 +301,8 @@ def main(args):
             print('resume from checkpoint failed')
     else:
         net = resnet20()
+        # net = cifar10Net()
+        # net = TinyCifarNet()
         net.cuda()
 
     net = extend(net)
