@@ -77,19 +77,23 @@ args = parser.parse_args()
 args.private = True
 
 sweep_configuration = {
-    "name": f"GEP_103to110",
+    "name": f"GEP_103_num_groups_3",
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
-        "lr": {"values": [0.1, 0.01]},
+        # "lr": {"values": [0.0001]},
+        "lr": {"values": [0.001]},
         # "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
-        "seed": {"values": [103, 104, 105]},
-        "clip0": {"values": [5.0, 1.0, 0.1]},
-        "eps": {"values": [8.0, 100.0]},
-        "n_epoch": {"values": [20]},
+        # "seed": {"values": [103, 104, 105]},
+        "seed": {"values": [104]},
+        "clip0": {"values": [5.0]},
+        "eps": {"values": [8.0]},
+        "n_epoch": {"values": [5]},
+        "num_groups": {"values": [1]},
         "num_bases": {"values": [1000]},
-        "batchsize": {"values": [512]},
+        "batchsize": {"values": [64, 32]},
         "perp": {"values": [True, False]},
+        # "perp": {"values": [False]},
     },
 }
 
