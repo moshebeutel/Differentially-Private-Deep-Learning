@@ -64,7 +64,7 @@ parser.add_argument('--rgp', action='store_true', help='use residual gradient pe
 parser.add_argument('--clip0', default=1., type=float, help='clipping threshold for gradient embedding')
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
-parser.add_argument('--num_groups', default=3, type=int, help='number of parameters groups')
+parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
 parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 
 parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
