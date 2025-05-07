@@ -81,7 +81,7 @@ override = args.override
 
 
 sweep_configuration = {
-    "name": f"GEP_103to105_{'Perp' if perp else 'NoPerp'}",
+    "name": f"GEP_104_{'Perp' if perp else 'NoPerp'}_small_eps",
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
@@ -90,13 +90,13 @@ sweep_configuration = {
         # "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
         # "seed": {"values": [103, 104, 105]},
         "num_groups": {"values": [3]},
-        "seed": {"values": [2]},
+        "seed": {"values": [104]},
         "clip0": {"values": [5.0]},
         # "clip0": {"values": [5.0, 1.0, 0.1]},
-        "eps": {"values": [8.0]},
-        "n_epoch": {"values": [200]},
+        "eps": {"values": [0.5]},
+        "n_epoch": {"values": [50]},
         "num_bases": {"values": [1000]},
-        "batchsize": {"values": [1000]},
+        "batchsize": {"values": [256]},
         "perp": {"values": [perp]},
         "override": {"values": [override]}
     },
