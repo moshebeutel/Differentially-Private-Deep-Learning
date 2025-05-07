@@ -13,6 +13,7 @@ import time
 import numpy as np
 
 from models import resnet20
+from models.cifar10_net import cifar10Net, TinyCifarNet
 from utils import get_data_loader, get_sigma, restore_param, checkpoint, adjust_learning_rate, process_grad_batch
 
 #package for computing individual gradients
@@ -24,12 +25,12 @@ parser = argparse.ArgumentParser(description='Differentially Private learning wi
 ## general arguments
 parser.add_argument('--dataset', default='cifar10', type=str, help='dataset name')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
+parser.add_argument('--sess', default='TinyCifar_cifar10', type=str, help='session name')
 parser.add_argument('--seed', default=2, type=int, help='random seed')
 parser.add_argument('--weight_decay', default=0., type=float, help='weight decay')
 parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
 parser.add_argument('--n_epoch', default=100, type=int, help='total number of epochs')
-parser.add_argument('--lr', default=0.1, type=float, help='base learning rate (default=0.1)')
+parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
 parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 
 
@@ -87,7 +88,9 @@ if(args.resume):
         assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
         checkpoint_file = './checkpoint/' + args.sess  + '.ckpt'
         checkpoint = torch.load(checkpoint_file)
-        net = resnet20()
+        # net = resnet20()
+        # net = cifar10Net()
+        net = TinyCifarNet()
         net.cuda()
         restore_param(net.state_dict(), checkpoint['net'])
         best_acc = checkpoint['acc']
@@ -96,7 +99,9 @@ if(args.resume):
     except:
         print('resume from checkpoint failed')
 else:
-    net = resnet20() 
+    # net = resnet20()
+    # net = cifar10Net()
+    net = TinyCifarNet()
     net.cuda()
 
 net = extend(net)

@@ -64,7 +64,7 @@ parser.add_argument('--rgp', action='store_true', help='use residual gradient pe
 parser.add_argument('--clip0', default=1., type=float, help='clipping threshold for gradient embedding')
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
 parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
-parser.add_argument('--num_groups', default=3, type=int, help='number of parameters groups')
+parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
 parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 
 parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
@@ -81,22 +81,23 @@ override = args.override
 
 
 sweep_configuration = {
-    "name": f"GEP_104_{'Perp' if perp else 'NoPerp'}_small_eps",
+    "name": f"GEP_103to105_{'Perp' if perp else 'NoPerp'}",
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
-        "lr": {"values": [0.0001]},
+        "lr": {"values": [0.00001]},
         # "lr": {"values": [0.1, 0.01]},
         # "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
         # "seed": {"values": [103, 104, 105]},
-        "num_groups": {"values": [3]},
-        "seed": {"values": [104]},
+        "num_groups": {"values": [1]},
+        "seed": {"values": [2]},
         "clip0": {"values": [5.0]},
         # "clip0": {"values": [5.0, 1.0, 0.1]},
-        "eps": {"values": [0.5]},
-        "n_epoch": {"values": [50]},
-        "num_bases": {"values": [1000]},
-        "batchsize": {"values": [256]},
+        "eps": {"values": [8.0, 1.0]},
+        "n_epoch": {"values": [20]},
+        "num_bases": {"values": [400]},
+        "aux_data_size": {"values": [800]},
+        "batchsize": {"values": [128]},
         "perp": {"values": [perp]},
         "override": {"values": [override]}
     },

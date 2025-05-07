@@ -148,7 +148,7 @@ class GEP(nn.Module):
         num_bases_list = num_bases_list.astype(int)
 
         if self.add_perp_vector:
-                    self.nullspace_factors = nn.ModuleList([LinearCombination(num_bases=self.num_public_examples - num_bases) for num_bases in num_bases_list])
+            self.nullspace_factors = nn.ModuleList([LinearCombination(num_bases=self.num_public_examples - num_bases) for num_bases in num_bases_list])
         # initialize_weights(self)
 
         self.num_bases_list = num_bases_list.tolist()
