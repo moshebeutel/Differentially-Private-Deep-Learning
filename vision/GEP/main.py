@@ -95,6 +95,7 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
             ## collect batch gradients
             batch_grad_list = []
             optimizer.zero_grad()
+            oldold_params = {n: p.detach().clone() for n, p in net.named_parameters() }
             outputs = net(inputs)
             loss = loss_func(outputs, targets)
             with backpack(BatchGrad()):
@@ -123,13 +124,12 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
             ## make use of noisy gradients
             offset = 0
             new_params = OrderedDict()
+            # old_params = {n: p.detach().clone() for n, p in net.named_parameters() }
             for n, p in net.named_parameters():
                 if p.grad is not None:
                     shape = p.grad.shape
                     numel = p.grad.numel()
-                    new_params[n] = torch.add(p, torch.mul(args.lr , torch.reshape(noisy_grad[offset:offset+numel], shape)), alpha=-1.0)
-                    # p.grad.data = noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
-                    # p =  p + args.lr * noisy_grad[offset:offset+numel].view(shape) #+ 0.1*torch.mean(pub_grad, dim=0).view(shape)
+                    new_params[n] = torch.add(p, torch.mul(args.lr , torch.reshape(noisy_grad[offset:offset+numel], shape)))
                     p.grad = None
                     offset+=numel
             if gep.add_perp_vector:
@@ -140,8 +140,62 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                 loss.backward()
                 # for group_num in range(args.num_groups):
                 #     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
+            with torch.no_grad():
+                offset = 0
+                for n, p in net.named_parameters():
+                    if 'gep.null' not in n:
+                        shape = p.shape
+                        numel = p.numel()
+                        p.grad = noisy_grad[offset:offset+numel].view(shape)
+                        offset+=numel
             optimizer.step()
-            net.load_state_dict(new_params)
+            # with torch.no_grad():
+            #         dist_old_new = 0.0
+            #         dist_curr_new = 0.0
+            #         dist_curr_old = 0.0
+            #
+            #         dist_old_new_gep = 0.0
+            #         dist_curr_new_gep = 0.0
+            #         dist_curr_old_gep = 0.0
+            #
+            #         dist_oldold_new = 0.0
+            #         dist_old_oldold = 0.0
+            #         dist_curr_oldold = 0.0
+            #
+            #         dist_oldold_new_gep = 0.0
+            #         dist_old_oldold_gep = 0.0
+            #         dist_curr_oldold_gep = 0.0
+            #
+            #
+            #
+            #         for n, p in net.named_parameters():
+            #             if 'gep.null' in n:
+            #                 dist_old_new += float(torch.dist(old_params[n], new_params[n]))
+            #                 dist_curr_old += float(torch.dist(p, old_params[n]))
+            #                 dist_curr_new += float(torch.dist(p, new_params[n]))
+            #                 dist_oldold_new += float(torch.dist(oldold_params[n], new_params[n]))
+            #                 dist_curr_oldold += float(torch.dist(p, oldold_params[n]))
+            #                 dist_old_oldold += float(torch.dist(old_params[n], oldold_params[n]))
+            #             else:
+            #                 dist_old_new_gep += float(torch.dist(old_params[n], new_params[n]))
+            #                 dist_curr_old_gep += float(torch.dist(p, old_params[n]))
+            #                 dist_curr_new_gep += float(torch.dist(p, new_params[n]))
+            #                 dist_oldold_new_gep += float(torch.dist(oldold_params[n], new_params[n]))
+            #                 dist_curr_oldold_gep += float(torch.dist(p, oldold_params[n]))
+            #                 dist_old_oldold_gep += float(torch.dist(old_params[n], oldold_params[n]))
+            #
+            #         print('dist old new', dist_old_new)
+            #         print('dist_curr_old', dist_curr_old)
+            #         print('dist_curr_new', dist_curr_new)
+            #         print('dist_old_new_gep', dist_old_new_gep)
+            #         print('dist_curr_old_gep', dist_curr_old_gep)
+            #         print('dist_curr_new_gep', dist_curr_new_gep)
+            #         print('dist oldold new', dist_oldold_new)
+            #         print('dist_curr_oldold', dist_curr_oldold)
+            #         print('dist_old_oldold', dist_old_oldold)
+            #         print('dist_oldold_new_gep', dist_oldold_new_gep)
+            #         print('dist_curr_oldold_gep', dist_curr_oldold_gep)
+            #         print('dist_old_oldold_gep', dist_old_oldold_gep)
 
         else:  # not args.private
             optimizer.zero_grad()
