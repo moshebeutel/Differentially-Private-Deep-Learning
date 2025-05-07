@@ -1,3 +1,4 @@
+import random
 
 import torch
 import torch.nn as nn
@@ -117,7 +118,7 @@ def flatten_tensor(tensor_list):
     return flatten_param
 
 
-def checkpoint(net, acc, epoch, sess):
+def save_checkpoint(net, acc, epoch, sess):
     state = {
         'net': net.state_dict(),
         'acc': acc,
@@ -142,3 +143,22 @@ def adjust_learning_rate(optimizer, init_lr, epoch, all_epoch):
     for param_group in optimizer.param_groups:
         param_group['lr'] = init_lr / decay
     return init_lr / decay
+
+def set_seed(seed, cudnn_enabled=True):
+    """for reproducibility
+
+    :param seed:
+    :return:
+    """
+
+    np.random.seed(seed)
+    random.seed(seed)
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.enabled = cudnn_enabled
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
