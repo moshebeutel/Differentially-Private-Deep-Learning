@@ -170,8 +170,6 @@ class GEP(nn.Module):
                 perp_bases = self.selected_bases_perp_list[i]
                 assert hasattr(self, 'nullspace_factors'), f'Expected definition of nullspace factor'
                 in_vec = torch.matmul(embedding[:, offset:offset + num_bases].view(bs, -1), bases.T)
-                # perp_vec = torch.matmul(embedding[:, offset:offset+num_bases].view(bs, -1), perp_bases.T)
-                # x = torch.cat([in_vec, perp_vec], dim=1)
                 grad_centered = self.nullspace_factors[i](in_vec, perp_bases)
             else:
                 grad_centered = torch.matmul(embedding[:, offset:offset+num_bases].view(bs, -1), bases.T)
@@ -295,11 +293,17 @@ class GEP(nn.Module):
         concatenated_embedding = torch.cat(embedding_list, dim=1)
         assert concatenated_embedding.shape == (self.batch_size, sum(self.num_bases_list)), \
             f'concatenated_embedding.shape: {concatenated_embedding.shape}, Expected batch_size x sum(num_bases_list) {self.batch_size} x {sum(self.num_bases_list)} '
-        clipped_embedding = clip_column(concatenated_embedding, clip=self.clip0, inplace=False)
+        with torch.no_grad():
+            norms = torch.norm(concatenated_embedding, dim=1)
+            clip_val = torch.median(norms).item()
+        # print('clipping embedding to median norm:', clip_val)
+        clipped_embedding = clip_column(concatenated_embedding, clip=clip_val, inplace=False)
+        # clipped_embedding = clip_column(concatenated_embedding, clip=self.clip0, inplace=False)
         assert clipped_embedding.shape == concatenated_embedding.shape, f'clipped_embedding.shape: {clipped_embedding.shape},'
         if logging:
             with torch.no_grad():
-                norms = torch.norm(concatenated_embedding, dim=1)
+                print('clipping embedding to median norm:', clip_val)
+
                 print('average norm of embedding: ', torch.mean(norms).item(), 'max norm: ', torch.max(norms).item(), 'median norm: ', torch.median(norms).item())
                 norms = torch.norm(clipped_embedding, dim=1)
                 print('average norm of clipped embedding: ', torch.mean(norms).item(), 'max norm: ', torch.max(norms).item(), 'median norm: ', torch.median(norms).item())

@@ -113,14 +113,14 @@ def save_checkpoint(net, acc, epoch, sess):
     torch.save(state, './checkpoint/' + sess  + f'epoch_{epoch}_acc_{acc}.ckpt')
 
 def adjust_learning_rate(optimizer, init_lr, epoch, all_epoch):
-    """decrease the learning rate at 100 and 150 epoch"""
-    decay = 1.0
-    if(epoch<all_epoch*0.5):
-        decay = 1.
-    elif(epoch<all_epoch*0.75):
-        decay = 10.
-    else:
-        decay = 100.
+    # """decrease the learning rate at 100 and 150 epoch"""
+    decay = 1.1
+    # if(epoch<all_epoch*0.5):
+    #     decay = 1.
+    # elif(epoch<all_epoch*0.75):
+    #     decay = 10.
+    # else:
+    #     decay = 100.
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = init_lr / decay
