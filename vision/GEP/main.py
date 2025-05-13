@@ -14,7 +14,7 @@ from backpack import backpack, extend
 from backpack.extensions import BatchGrad
 from torch.func import functional_call
 from models import GEP
-from utils import get_data_loader, get_sigma, restore_param, flatten_tensor, save_checkpoint, adjust_learning_rate
+from utils import get_data_loader, get_sigma, restore_param, flatten_tensor, save_checkpoint
 
 # from models import resnet20
 from models.cifar10_net import cifar10Net, TinyCifarNet
@@ -107,10 +107,15 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
 
             ## compute gradient embeddings and residual gradients
             clipped_theta, residual_grad, target_grad = net.gep(flatten_tensor(batch_grad_list), logging = logging)
+            if logging:
+                print(f'clean clipped_theta: {clipped_theta.norm().item()}')
             ## add noise to guarantee differential privacy
             theta_noise = torch.normal(0, noise_multiplier0*args.clip0/args.batchsize, size=clipped_theta.shape, device=clipped_theta.device)
             grad_noise = torch.normal(0, noise_multiplier1*args.clip1/args.batchsize, size=residual_grad.shape, device=residual_grad.device)
             clipped_theta += theta_noise
+            if logging:
+                print(f'noised clipped_theta: {clipped_theta.norm().item()}')
+                print(f'theta noise: {theta_noise.norm().item()}')
             residual_grad += grad_noise
 
 
@@ -135,16 +140,9 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
             if gep.add_perp_vector:
                 for group_num in range(args.num_groups):
                     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
-                # outputs = functional_call(net, new_params, (inputs, ))
-                # loss = loss_func(outputs, targets)
-                dataset = torch.utils.data.TensorDataset(gep.public_inputs, gep.public_inputs)
-                publicloader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=True, num_workers=0)
-                public_inputs, public_targets = next(iter(publicloader))
-                if use_cuda:
-                    public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
-                outputs = functional_call(net, new_params, (public_inputs, ))
-                loss = loss_func(outputs, public_targets)
-                loss.backward()
+                public_outputs = functional_call(net, new_params, (gep.public_inputs, ))
+                public_loss = loss_func(public_outputs, gep.public_targets)
+                public_loss.backward()
                 # for group_num in range(args.num_groups):
                 #     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
             with torch.no_grad():
@@ -322,10 +320,12 @@ def main(args):
     sigma, eps = get_sigma(sampling_prob, steps, args.eps, args.delta, rgp=args.rgp)
     noise_multiplier0 = noise_multiplier1 = 0 if args.override else sigma
     print(f'override sigma: {args.override}')
-    print('noise scale for gradient embedding: ', noise_multiplier0, 'noise scale for residual gradient: ',
-          noise_multiplier1, '\n rgp enabled: ', args.rgp, 'privacy guarantee: ', eps)
+    print('noise scale for gradient embedding: ', noise_multiplier0)
+    print('noise scale for residual gradient: ', noise_multiplier1)
+    print('rgp enabled?: ', args.rgp)
+    print('privacy guarantee: ', eps)
 
-    session = f'{args.sess}_perp_{args.perp}_sigma_{sigma:.3}_lr_{args.lr}_clip0_{args.clip0}_seed_{args.seed}'
+    session = f'{args.sess}_perp_{args.perp}_sigma_{noise_multiplier0:.3}_lr_{args.lr}_clip0_{args.clip0}_seed_{args.seed}'
     print('session name: ', session)
 
     print('\n==> Creating GEP class instance')
@@ -344,7 +344,7 @@ def main(args):
             checkpoint = torch.load(checkpoint_file)
             # net = resnet20()
             # net = cifar10Net()
-            net = TinyCifarNet()
+            net = TinyCifarNet(num_filters=args.filters)
             restore_param(net.state_dict(), checkpoint['net'])
             best_acc = checkpoint['acc']
             start_epoch = checkpoint['epoch'] + 1
@@ -355,7 +355,7 @@ def main(args):
     else:
         # net = resnet20()
         # net = cifar10Net()
-        net = TinyCifarNet()
+        net = TinyCifarNet(num_filters=args.filters)
 
     net = extend(net)
 
@@ -363,9 +363,9 @@ def main(args):
     for p in net.parameters():
         num_params += p.numel()
 
-    print('total number of parameters: ', num_params / (10 ** 6), 'M')
+    print('total number of parameters: ', num_params)
 
-    if (args.private):
+    if args.private:
         loss_func = nn.CrossEntropyLoss(reduction='sum')
     else:
         loss_func = nn.CrossEntropyLoss(reduction='mean')
@@ -403,9 +403,9 @@ def main(args):
     history = []
     save_every = 10
     wandb.init(project='GEP', name=session)
+    lr = args.lr
     for epoch in range(start_epoch, args.n_epoch):
-        # lr = adjust_learning_rate(optimizer, args.lr, epoch, all_epoch=args.n_epoch)
-        lr = args.lr
+        # lr = adjust_learning_rate(optimizer, lr, epoch, all_epoch=args.n_epoch)
         train_loss, train_acc = train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
           noise_multiplier0, noise_multiplier1, use_cuda, optimizer,loss_func,
                                       perp_history=None if not args.perp else perp_history)
