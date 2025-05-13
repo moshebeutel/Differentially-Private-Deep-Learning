@@ -85,7 +85,7 @@ sweep_configuration = {
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
-        "lr": {"values": [0.00001]},
+        "lr": {"values": [0.0001]},
         # "lr": {"values": [0.1, 0.01]},
         # "seed": {"values": [103, 104, 105, 106, 107, 108, 109, 110]},
         # "seed": {"values": [103, 104, 105]},

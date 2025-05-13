@@ -14,7 +14,7 @@ from backpack import backpack, extend
 from backpack.extensions import BatchGrad
 from torch.func import functional_call
 from models import GEP
-from utils import get_data_loader, get_sigma, restore_param, flatten_tensor, save_checkpoint
+from utils import get_data_loader, get_sigma, restore_param, flatten_tensor, save_checkpoint, adjust_learning_rate
 
 # from models import resnet20
 from models.cifar10_net import cifar10Net, TinyCifarNet
@@ -129,14 +129,21 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                 if p.grad is not None:
                     shape = p.grad.shape
                     numel = p.grad.numel()
-                    new_params[n] = torch.add(p, torch.mul(args.lr , torch.reshape(noisy_grad[offset:offset+numel], shape)))
+                    new_params[n] = torch.add(p, torch.mul(args.lr, torch.reshape(noisy_grad[offset:offset+numel], shape)))
                     p.grad = None
                     offset+=numel
             if gep.add_perp_vector:
                 for group_num in range(args.num_groups):
                     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
-                outputs = functional_call(net, new_params, (inputs, ))
-                loss = loss_func(outputs, targets)
+                # outputs = functional_call(net, new_params, (inputs, ))
+                # loss = loss_func(outputs, targets)
+                dataset = torch.utils.data.TensorDataset(gep.public_inputs, gep.public_inputs)
+                publicloader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=True, num_workers=0)
+                public_inputs, public_targets = next(iter(publicloader))
+                if use_cuda:
+                    public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
+                outputs = functional_call(net, new_params, (public_inputs, ))
+                loss = loss_func(outputs, public_targets)
                 loss.backward()
                 # for group_num in range(args.num_groups):
                 #     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
