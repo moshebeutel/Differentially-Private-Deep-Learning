@@ -21,7 +21,6 @@ from models.cifar10_net import cifar10Net, TinyCifarNet
 
 
 def get_args():
-
     parser = argparse.ArgumentParser(description='Differentially Private learning with GEP')
 
     ## general arguments
@@ -36,13 +35,14 @@ def get_args():
     parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
     parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 
-
     ## arguments for learning with differential privacy
     parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
     parser.add_argument('--override', '-o', action='store_true', help='zero sigma')
     parser.add_argument('--perp', '-v', action='store_true', help='add perpendicular vector')
     parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help='privacy parameter epsilon')
     parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
+    parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
+    parser.add_argument('--public_perp_split', default=-1.0, type=float, help='split public data for perp train')
 
     parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
     parser.add_argument('--clip0', default=5., type=float, help='clipping threshold for gradient embedding')
@@ -52,16 +52,16 @@ def get_args():
     parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 
     parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
-    parser.add_argument('--aux_dataset', default='imagenet', type=str, help='name of the public dataset, [cifar10, cifar100, imagenet]')
+    parser.add_argument('--aux_dataset', default='imagenet', type=str,
+                        help='name of the public dataset, [cifar10, cifar100, imagenet]')
     parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
-
 
     args = parser.parse_args()
     return args
 
 
 def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
-          noise_multiplier0, noise_multiplier1, use_cuda, optimizer,loss_func, perp_history=None):
+          noise_multiplier0, noise_multiplier1, use_cuda, optimizer, loss_func, perp_history=None):
     print('\nEpoch: %d' % epoch)
     net.train()
     train_loss = 0
@@ -69,18 +69,18 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
     correct: int = 0
     total = 0
     t0 = time.time()
-    steps = n_training//args.batchsize
+    steps = n_training // args.batchsize
 
-    if(train_samples == None): # using pytorch data loader for CIFAR10
+    if (train_samples == None):  # using pytorch data loader for CIFAR10
         loader = iter(trainloader)
-    else: # manually sample minibatchs for SVHN
+    else:  # manually sample minibatchs for SVHN
         sample_idxes = np.arange(n_training)
         np.random.shuffle(sample_idxes)
 
     for batch_idx in range(steps):
 
-        if(args.dataset=='svhn'):
-            current_batch_idxes = sample_idxes[batch_idx*args.batchsize : (batch_idx+1)*args.batchsize]
+        if (args.dataset == 'svhn'):
+            current_batch_idxes = sample_idxes[batch_idx * args.batchsize: (batch_idx + 1) * args.batchsize]
             inputs, targets = train_samples[current_batch_idxes], train_labels[current_batch_idxes]
         else:
             inputs, targets = next(loader)
@@ -95,7 +95,7 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
             ## collect batch gradients
             batch_grad_list = []
             optimizer.zero_grad()
-            oldold_params = {n: p.detach().clone() for n, p in net.named_parameters() }
+            # oldold_params = {n: p.detach().clone() for n, p in net.named_parameters() }
             outputs = net(inputs)
             loss = loss_func(outputs, targets)
             with backpack(BatchGrad()):
@@ -106,26 +106,29 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                     del p.grad_batch
 
             ## compute gradient embeddings and residual gradients
-            clipped_theta, residual_grad, target_grad = net.gep(flatten_tensor(batch_grad_list), logging = logging)
+            clipped_theta, residual_grad, target_grad, clip_val = net.gep(flatten_tensor(batch_grad_list),
+                                                                          logging=logging)
             if logging:
                 print(f'clean clipped_theta: {clipped_theta.norm().item()}')
             ## add noise to guarantee differential privacy
-            theta_noise = torch.normal(0, noise_multiplier0*args.clip0/args.batchsize, size=clipped_theta.shape, device=clipped_theta.device)
-            grad_noise = torch.normal(0, noise_multiplier1*args.clip1/args.batchsize, size=residual_grad.shape, device=residual_grad.device)
+            theta_noise = torch.normal(0, noise_multiplier0 * clip_val / args.batchsize, size=clipped_theta.shape,
+                                       device=clipped_theta.device)
+            grad_noise = torch.normal(0, noise_multiplier1 * args.clip1 / args.batchsize, size=residual_grad.shape,
+                                      device=residual_grad.device)
             clipped_theta += theta_noise
             if logging:
                 print(f'noised clipped_theta: {clipped_theta.norm().item()}')
                 print(f'theta noise: {theta_noise.norm().item()}')
             residual_grad += grad_noise
 
-
             ## update with Biased-GEP or GEP
-            if(args.rgp):
+            if (args.rgp):
                 noisy_grad = gep.get_approx_grad(clipped_theta) + residual_grad
             else:
                 noisy_grad = gep.get_approx_grad(clipped_theta)
             if logging:
-                print('target grad norm: %.2f, noisy approximation norm: %.2f'%(target_grad.norm().item(), noisy_grad.norm().item()))
+                print('target grad norm: %.2f, noisy approximation norm: %.2f' % (
+                    target_grad.norm().item(), noisy_grad.norm().item()))
             ## make use of noisy gradients
             offset = 0
             new_params = OrderedDict()
@@ -134,25 +137,30 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                 if p.grad is not None:
                     shape = p.grad.shape
                     numel = p.grad.numel()
-                    new_params[n] = torch.add(p, torch.mul(args.lr, torch.reshape(noisy_grad[offset:offset+numel], shape)))
+                    new_params[n] = torch.add(p, torch.mul(args.lr,
+                                                           torch.reshape(noisy_grad[offset:offset + numel], shape)))
                     p.grad = None
-                    offset+=numel
+                    offset += numel
             if gep.add_perp_vector:
                 for group_num in range(args.num_groups):
                     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
-                public_outputs = functional_call(net, new_params, (gep.public_inputs, ))
-                public_loss = loss_func(public_outputs, gep.public_targets)
-                public_loss.backward()
-                # for group_num in range(args.num_groups):
-                #     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
+
+                assert hasattr(gep, 'public_perp_loader'), 'Expected attribute public perp split'
+
+                for public_inputs, public_targets in gep.public_perp_loader:
+                    public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
+                    public_outputs = functional_call(net, new_params, (public_inputs,))
+                    public_loss = loss_func(public_outputs, public_targets)
+                    public_loss.backward(retain_graph=True)
+
             with torch.no_grad():
                 offset = 0
                 for n, p in net.named_parameters():
                     if 'gep.null' not in n:
                         shape = p.shape
                         numel = p.numel()
-                        p.grad = noisy_grad[offset:offset+numel].view(shape)
-                        offset+=numel
+                        p.grad = noisy_grad[offset:offset + numel].view(shape)
+                        offset += numel
             optimizer.step()
             # with torch.no_grad():
             #         dist_old_new = 0.0
@@ -210,23 +218,25 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
             optimizer.step()
 
         step_loss = loss.item()
-        if(args.private):
+        if (args.private):
             step_loss /= inputs.shape[0]
         train_loss += step_loss
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).float().cpu().sum()
-        train_accuracy = float(correct)/float(total)
+        train_accuracy = float(correct) / float(total)
 
         # print(f'batch {batch_idx+1}/{steps} acc {acc:.4f} correct {correct}/{total}')
         # print(f'batch {batch_idx+1}/{steps} acc {acc:.4f} correct {correct}/{total} perp_factor {float(gep.nullspace_factors[0].weight):.4f}')
     t1 = time.time()
-    print('Train loss:%.5f'%(train_loss/steps), 'time: %d s'%(t1-t0), f'train acc: {100. * train_accuracy:.2f}%', end=' ')
+    print('Train loss:%.5f' % (train_loss / steps), 'time: %d s' % (t1 - t0),
+          f'train acc: {100. * train_accuracy:.2f}%', end=' ')
     if args.perp:
         perp_norm = sum([float(torch.linalg.norm(factor.weight)) for factor in gep.nullspace_factors])
         print(f'perp_factor {perp_norm:.4f}')
         perp_history.append(perp_norm)
     return train_loss / steps, train_accuracy
+
 
 @torch.no_grad()
 def test(args, net, testloader, use_cuda, loss_func, sigma):
@@ -242,21 +252,21 @@ def test(args, net, testloader, use_cuda, loss_func, sigma):
             outputs = net(inputs)
             loss = loss_func(outputs, targets)
             step_loss = loss.item()
-            if(args.private):
+            if (args.private):
                 step_loss /= inputs.shape[0]
 
-            test_loss += step_loss 
+            test_loss += step_loss
             _, predicted = torch.max(outputs.data, 1)
             total += targets.size(0)
             correct_idx = predicted.eq(targets.data).cpu()
             all_correct += correct_idx.numpy().tolist()
             correct += correct_idx.sum()
 
-        acc = 100.*float(correct)/float(total)
-        print('test loss:%.5f'%(test_loss/(batch_idx+1)), 'test acc:', acc)
+        acc = 100. * float(correct) / float(total)
+        print('test loss:%.5f' % (test_loss / (batch_idx + 1)), 'test acc:', acc)
 
+    return (test_loss / batch_idx, acc)
 
-    return (test_loss/batch_idx, acc)
 
 def main(args):
     assert args.dataset in ['cifar10', 'svhn']
@@ -335,6 +345,18 @@ def main(args):
     ## attach auxiliary data to GEP instance
     gep.public_inputs = public_inputs
     gep.public_targets = public_targets
+    if args.perp:
+        if args.public_perp_split > 0.0:
+            gep.public_perp_split = args.public_perp_split if args.perp else 1.0
+            full_size = public_inputs.shape[0]
+            split_ind = int(full_size * gep.public_perp_split)
+            public_perp_dataset = torch.utils.data.TensorDataset(public_inputs[split_ind:].cpu(),
+                                                                 public_targets[split_ind:].cpu())
+        else:
+            public_perp_dataset = torch.utils.data.TensorDataset(public_inputs.cpu(), public_targets.cpu())
+        gep.public_perp_loader = torch.utils.data.DataLoader(public_perp_dataset, batch_size=args.batchsize,
+                                                             shuffle=True,
+                                                             num_workers=2)
 
     print('\n==> Creating ResNet20 model instance')
     if (args.resume):
@@ -407,10 +429,10 @@ def main(args):
     for epoch in range(start_epoch, args.n_epoch):
         # lr = adjust_learning_rate(optimizer, lr, epoch, all_epoch=args.n_epoch)
         train_loss, train_acc = train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
-          noise_multiplier0, noise_multiplier1, use_cuda, optimizer,loss_func,
+                                      noise_multiplier0, noise_multiplier1, use_cuda, optimizer, loss_func,
                                       perp_history=None if not args.perp else perp_history)
         test_loss, test_acc = test(args, net, testloader, use_cuda, loss_func, sigma=noise_multiplier0)
-        ## Save checkpoint.
+        # Save checkpoint.
         if test_acc > best_acc:
             best_acc = test_acc
             save_checkpoint(net, test_acc, epoch, session)
@@ -431,13 +453,12 @@ def main(args):
             if args.perp:
                 np.array(perp_history).dump(f'./log/{session}_perp_history.npy')
 
-
     try:
         os.mkdir('approx_errors')
     except:
         pass
     import pickle
-    bfile=open('approx_errors/'+args.sess+'.pickle', 'wb')
+    bfile = open('approx_errors/' + args.sess + '.pickle', 'wb')
     pickle.dump(net.gep.approx_error, bfile)
     bfile.close()
 

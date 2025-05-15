@@ -20,12 +20,15 @@ def sweep_train(sweep_id, args, train_fn, config=None):
         wandb.run.name = '_'.join([f'{k}_{v}' for k, v in config.items()])
         train_fn(args)
 
+
 def init_sweep(config):
     sweep_id = wandb.sweep(sweep=config, project="GEP")
     return sweep_id
 
+
 def start_sweep(sweep_id, f_sweep):
     wandb.agent(sweep_id=sweep_id, function=f_sweep)
+
 
 def sweep(sweep_config, args, train_fn):
     # logger = logging.getLogger(args.log_name)
@@ -54,6 +57,8 @@ parser.add_argument('--override', '-o', action='store_true', help='zero sigma')
 parser.add_argument('--perp', '-v', action='store_true', help='add perpendicular vector')
 parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help='privacy parameter epsilon')
 parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
+parser.add_argument('--public_perp_split', default=0.75, type=float, help='split public data for perp train')
+
 parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
 parser.add_argument('--clip0', default=1., type=float, help='clipping threshold for gradient embedding')
 parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
@@ -61,9 +66,9 @@ parser.add_argument('--power_iter', default=1, type=int, help='number of power i
 parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
 parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
 parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
-parser.add_argument('--aux_dataset', default='imagenet', type=str, help='name of the public dataset, [cifar10, cifar100, imagenet]')
+parser.add_argument('--aux_dataset', default='imagenet', type=str,
+                    help='name of the public dataset, [cifar10, cifar100, imagenet]')
 parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
-
 
 args = parser.parse_args()
 
@@ -72,25 +77,27 @@ perp = args.perp
 override = args.override
 
 sweep_configuration = {
-    # "name": f"GEP_103to105_{'Perp' if perp else 'NoPerp'}",
-    "name": f"GEP_SEED_2_TINY_COMPARE",
+    "name": f"GEP_SEED_2_TINY_{'Perp' if perp else 'NoPerp'}",
+    # "name": f"GEP_SEED_2_TINY_COMPARE",
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
-        "lr": {"values": [0.0002]},
+        "lr": {"values": [0.00001]},
         "num_groups": {"values": [1]},
         "seed": {"values": [2]},
-        "clip0": {"values": [5.0]},
-        "eps": {"values": [0.5]},
-        "filters": {"values": [4]},
-        "n_epoch": {"values": [10]},
-        "num_bases": {"values": [200, 400, 800]},
+        "clip0": {"values": [20.0, 30.0]},
+        "eps": {"values": [1.0]},
+        "public_perp_split": {"values": [0.95]},
+        "filters": {"values": [16]},
+        "n_epoch": {"values": [30]},
+        "num_bases": {"values": [800]},
         "aux_data_size": {"values": [2000]},
         "batchsize": {"values": [128]},
-        "perp": {"values": [True]},
+        "perp": {"values": [perp]},
         "override": {"values": [False]}
     },
 }
+
 
 def namespace_to_cmd_args(namespace):
     args_list = []
@@ -101,6 +108,7 @@ def namespace_to_cmd_args(namespace):
         else:
             args_list.extend([f'--{key}', str(value)])
     return args_list
+
 
 wandb.login()
 
