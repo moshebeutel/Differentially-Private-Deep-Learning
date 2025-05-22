@@ -29,7 +29,7 @@ def get_args():
     # parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
     parser.add_argument('--sess', default='TinyCifar_cifar10', type=str, help='session name')
     parser.add_argument('--seed', default=2, type=int, help='random seed')
-    parser.add_argument('--weight_decay', default=2e-4, type=float, help='weight decay')
+    parser.add_argument('--weight_decay', default=0.0, type=float, help='weight decay')
     parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
     parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
     parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
@@ -70,6 +70,7 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
     total = 0
     t0 = time.time()
     steps = n_training // args.batchsize
+    num_layers = len(list(net.parameters()))
 
     if (train_samples == None):  # using pytorch data loader for CIFAR10
         loader = iter(trainloader)
@@ -132,13 +133,20 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
             ## make use of noisy gradients
             offset = 0
             new_params = OrderedDict()
+            if len(optimizer.state.values()) == 0:
+                velocities = [0] * num_layers
+            else:
+                velocities = [val['momentum_buffer'] for val in optimizer.state.values()]
             # old_params = {n: p.detach().clone() for n, p in net.named_parameters() }
-            for n, p in net.named_parameters():
+            for (n, p), v in zip(net.named_parameters(), velocities):
                 if p.grad is not None:
                     shape = p.grad.shape
                     numel = p.grad.numel()
-                    new_params[n] = torch.add(p, torch.mul(args.lr,
-                                                           torch.reshape(noisy_grad[offset:offset + numel], shape)))
+                    v = torch.mul(args.momentum, v) + torch.reshape(noisy_grad[offset:offset + numel], shape)
+                    new_params[n] = torch.sub(p, torch.mul(args.lr, v))
+                    # new_params[n] = torch.sub(p, torch.mul(args.lr,
+                    #                                        torch.reshape(noisy_grad[offset:offset + numel], shape)))
+
                     p.grad = None
                     offset += numel
             if gep.add_perp_vector:
@@ -147,11 +155,15 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
 
                 assert hasattr(gep, 'public_perp_loader'), 'Expected attribute public perp split'
 
-                for public_inputs, public_targets in gep.public_perp_loader:
-                    public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
-                    public_outputs = functional_call(net, new_params, (public_inputs,))
-                    public_loss = loss_func(public_outputs, public_targets)
-                    public_loss.backward(retain_graph=True)
+                # for public_inputs, public_targets in gep.public_perp_loader:
+                #     public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
+                #     public_outputs = functional_call(net, new_params, (public_inputs,))
+                #     public_loss = loss_func(public_outputs, public_targets)
+                #     public_loss.backward(retain_graph=True)
+
+                perp_outputs = functional_call(net, new_params, (inputs,))
+                perp_loss = loss_func(perp_outputs, targets)
+                perp_loss.backward(retain_graph=True)
 
             with torch.no_grad():
                 offset = 0
@@ -421,7 +433,7 @@ def main(args):
         lr=args.lr,
         momentum=args.momentum,
         weight_decay=args.weight_decay)
-    print('\n==> Strat training')
+    print('\n==> Start training')
     history = []
     save_every = 10
     wandb.init(project='GEP', name=session)
@@ -441,10 +453,11 @@ def main(args):
             'train_acc': train_acc,
             'test_loss': test_loss,
             'test_acc': test_acc,
+            'best_acc': best_acc,
             'lr': lr}, step=epoch)
         if args.perp:
             wandb.log({'perp_factor': perp_history[-1]}, step=epoch)
-        history.append([lr, train_loss, train_acc, test_loss, test_acc])
+        history.append([lr, train_loss, train_acc, test_loss, test_acc, best_acc])
         print('lr: ', lr)
         if epoch % save_every == save_every - 1 or epoch == args.n_epoch - 1:
             save_checkpoint(net, test_acc, epoch, session)
