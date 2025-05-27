@@ -60,6 +60,55 @@ def get_args():
     return args
 
 
+@torch.no_grad()
+def print_distance(net, oldold_params, old_params, new_params):
+    with torch.no_grad():
+        dist_old_new = 0.0
+        dist_curr_new = 0.0
+        dist_curr_old = 0.0
+
+        dist_old_new_gep = 0.0
+        dist_curr_new_gep = 0.0
+        dist_curr_old_gep = 0.0
+
+        dist_oldold_new = 0.0
+        dist_old_oldold = 0.0
+        dist_curr_oldold = 0.0
+
+        dist_oldold_new_gep = 0.0
+        dist_old_oldold_gep = 0.0
+        dist_curr_oldold_gep = 0.0
+
+        for n, p in net.named_parameters():
+            if 'gep.null' in n:
+                dist_old_new += float(torch.dist(old_params[n], new_params[n]))
+                dist_curr_old += float(torch.dist(p, old_params[n]))
+                dist_curr_new += float(torch.dist(p, new_params[n]))
+                dist_oldold_new += float(torch.dist(oldold_params[n], new_params[n]))
+                dist_curr_oldold += float(torch.dist(p, oldold_params[n]))
+                dist_old_oldold += float(torch.dist(old_params[n], oldold_params[n]))
+            else:
+                dist_old_new_gep += float(torch.dist(old_params[n], new_params[n]))
+                dist_curr_old_gep += float(torch.dist(p, old_params[n]))
+                dist_curr_new_gep += float(torch.dist(p, new_params[n]))
+                dist_oldold_new_gep += float(torch.dist(oldold_params[n], new_params[n]))
+                dist_curr_oldold_gep += float(torch.dist(p, oldold_params[n]))
+                dist_old_oldold_gep += float(torch.dist(old_params[n], oldold_params[n]))
+
+        print('dist old new', dist_old_new)
+        print('dist_curr_old', dist_curr_old)
+        print('dist_curr_new', dist_curr_new)
+        print('dist_old_new_gep', dist_old_new_gep)
+        print('dist_curr_old_gep', dist_curr_old_gep)
+        print('dist_curr_new_gep', dist_curr_new_gep)
+        print('dist oldold new', dist_oldold_new)
+        print('dist_curr_oldold', dist_curr_oldold)
+        print('dist_old_oldold', dist_old_oldold)
+        print('dist_oldold_new_gep', dist_oldold_new_gep)
+        print('dist_curr_oldold_gep', dist_curr_oldold_gep)
+        print('dist_old_oldold_gep', dist_old_oldold_gep)
+
+
 def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
           noise_multiplier0, noise_multiplier1, use_cuda, optimizer, loss_func, perp_history=None):
     print('\nEpoch: %d' % epoch)
@@ -142,6 +191,18 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                 if p.grad is not None:
                     shape = p.grad.shape
                     numel = p.grad.numel()
+
+                    # Following pytorch sgd with momentum implementation.
+                    # -----------------------
+                    # v_t+1 = mu*v_t + g_t+1
+                    # p_t+1 = p_t - lr*v_t+1
+                    # -----------------------
+                    # Differs from Sutskever et al. and other frameworks
+                    # -----------------------
+                    # v_t+1 = mu*v_t + lr*g_t+1
+                    # p_t+1 = p_t - v_t+1
+                    # -----------------------
+
                     v = torch.mul(args.momentum, v) + torch.reshape(noisy_grad[offset:offset + numel], shape)
                     new_params[n] = torch.sub(p, torch.mul(args.lr, v))
                     # new_params[n] = torch.sub(p, torch.mul(args.lr,
@@ -174,54 +235,7 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                         p.grad = noisy_grad[offset:offset + numel].view(shape)
                         offset += numel
             optimizer.step()
-            # with torch.no_grad():
-            #         dist_old_new = 0.0
-            #         dist_curr_new = 0.0
-            #         dist_curr_old = 0.0
-            #
-            #         dist_old_new_gep = 0.0
-            #         dist_curr_new_gep = 0.0
-            #         dist_curr_old_gep = 0.0
-            #
-            #         dist_oldold_new = 0.0
-            #         dist_old_oldold = 0.0
-            #         dist_curr_oldold = 0.0
-            #
-            #         dist_oldold_new_gep = 0.0
-            #         dist_old_oldold_gep = 0.0
-            #         dist_curr_oldold_gep = 0.0
-            #
-            #
-            #
-            #         for n, p in net.named_parameters():
-            #             if 'gep.null' in n:
-            #                 dist_old_new += float(torch.dist(old_params[n], new_params[n]))
-            #                 dist_curr_old += float(torch.dist(p, old_params[n]))
-            #                 dist_curr_new += float(torch.dist(p, new_params[n]))
-            #                 dist_oldold_new += float(torch.dist(oldold_params[n], new_params[n]))
-            #                 dist_curr_oldold += float(torch.dist(p, oldold_params[n]))
-            #                 dist_old_oldold += float(torch.dist(old_params[n], oldold_params[n]))
-            #             else:
-            #                 dist_old_new_gep += float(torch.dist(old_params[n], new_params[n]))
-            #                 dist_curr_old_gep += float(torch.dist(p, old_params[n]))
-            #                 dist_curr_new_gep += float(torch.dist(p, new_params[n]))
-            #                 dist_oldold_new_gep += float(torch.dist(oldold_params[n], new_params[n]))
-            #                 dist_curr_oldold_gep += float(torch.dist(p, oldold_params[n]))
-            #                 dist_old_oldold_gep += float(torch.dist(old_params[n], oldold_params[n]))
-            #
-            #         print('dist old new', dist_old_new)
-            #         print('dist_curr_old', dist_curr_old)
-            #         print('dist_curr_new', dist_curr_new)
-            #         print('dist_old_new_gep', dist_old_new_gep)
-            #         print('dist_curr_old_gep', dist_curr_old_gep)
-            #         print('dist_curr_new_gep', dist_curr_new_gep)
-            #         print('dist oldold new', dist_oldold_new)
-            #         print('dist_curr_oldold', dist_curr_oldold)
-            #         print('dist_old_oldold', dist_old_oldold)
-            #         print('dist_oldold_new_gep', dist_oldold_new_gep)
-            #         print('dist_curr_oldold_gep', dist_curr_oldold_gep)
-            #         print('dist_old_oldold_gep', dist_old_oldold_gep)
-
+            # print_distance(net, oldold_params, old_params, new_params)
         else:  # not args.private
             optimizer.zero_grad()
             outputs = net(inputs)
