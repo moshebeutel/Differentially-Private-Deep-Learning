@@ -4,9 +4,11 @@ from collections import OrderedDict
 from typing import Optional
 import psutil
 
-import numpy as np
 import torch
 import torch.nn as nn
+import numpy as np
+import math
+
 # package for computing individual gradients
 from backpack import backpack, extend
 from backpack.extensions import BatchGrad
@@ -55,16 +57,31 @@ def inplace_clipping(matrix, clip):
         if(col_norm > clip):
             col /= (col_norm/clip)
 
-def check_approx_error(L, target):
-    encode = torch.matmul(target, L) # n x k
+
+def cosine_similarity(a, b):
+    a = a.mean(0, keepdim=False)
+    b = b.mean(0, keepdim=False)
+    cosine = torch.dot(a, b) / (torch.norm(a) * torch.norm(b))
+    angle_rad = torch.acos(cosine)
+    angle_deg = float(angle_rad * 180 / np.pi)
+    return cosine, angle_deg
+
+
+def check_approx_error(L, target, return_cosine=False):
+    encode = torch.matmul(target, L)  # n x k
     decode = torch.matmul(encode, L.T)
-    error = torch.sum(torch.square(target - decode))
-    target = torch.sum(torch.square(target))
-    if(target.item()==0):
+    error = float(torch.sum(torch.square(target - decode)))
+    target_sum_squares = float(torch.sum(torch.square(target)))
+    if target_sum_squares == 0:
         return -1
-    return error.item()/target.item()
+    if not return_cosine:
+        return error / target_sum_squares
+    else:
+        cosine, angle_deg = cosine_similarity(target, decode)
+        return error / target_sum_squares, float(cosine), angle_deg
 
 def get_bases(pub_grad, num_bases, power_iter=1, logging=False):
+    assert not SVD, 'SVD enabled'
     num_k = pub_grad.shape[0]
     num_p = pub_grad.shape[1]
   
@@ -78,7 +95,17 @@ def get_bases(pub_grad, num_bases, power_iter=1, logging=False):
     return L, num_bases, error_rate
 
 
+def get_bases_svd(pub_grad: torch.Tensor, num_bases: int) -> tuple[torch.Tensor, int, float]:
+    assert SVD, 'SVD not enabled'
+    num_k = pub_grad.shape[0]
+    num_p = pub_grad.shape[1]
 
+    num_bases = min(num_bases, num_p)
+    U, S, Vh = torch.svd(pub_grad)
+    L = Vh[:, :num_bases]
+    error_rate, cosine, angle_deg = check_approx_error(L, pub_grad, return_cosine=True)
+    # print(f'get_bases_svd: error_rate: {100*error_rate:.2f}%  cosine: {cosine}, angle(deg): {angle_deg}')
+    return Vh, num_bases, error_rate
 class GEP(nn.Module):
 
     def __init__(self, num_bases, batch_size, clip0=1, clip1=1, power_iter=1):
@@ -499,6 +526,10 @@ class UNetGEP(GEP):
         with torch.no_grad():
 
             embedding = self._ae.encode(target_grad.unsqueeze(1))
+			
+			norms = torch.norm(concatenated_embedding, dim=1)
+            median_norm = torch.median(norms).item()
+            clip_val = min(self.clip0, median_norm)
 
 
 
