@@ -1,5 +1,6 @@
 import random
 
+import psutil
 import torch
 import torch.nn as nn
 import torchvision
@@ -144,3 +145,12 @@ def set_seed(seed, cudnn_enabled=True):
     torch.backends.cudnn.enabled = cudnn_enabled
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+
+def print_memory_usage(cpu=True, gpu=True, device='coda:0'):
+    if gpu:
+        allocated_memory = torch.cuda.memory_allocated(device) / 1024 ** 2
+        print(f"Allocated GPU memory: {allocated_memory:.2f} MB")
+    if cpu:
+        cpu_memory = psutil.virtual_memory()
+        print(f"Available CPU memory: {cpu_memory.available / 1024 ** 2:.2f} MB")

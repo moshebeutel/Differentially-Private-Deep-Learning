@@ -17,10 +17,9 @@ from torch.utils.data import DataLoader
 from tqdm import trange
 from models.nonlinear_basis_matching import UNetGEP
 from utils import get_data_loader, get_sigma, restore_param, flatten_tensor, save_checkpoint, adjust_learning_rate
-from models.resnet_cifar import resnet20, resnet20halfparams
-
-
-# from models.cifar10_net import cifar10Net, TinyCifarNet
+# from models.resnet_cifar import resnet20, resnet20halfparams
+# from models.cifar10_net import cifar10Net
+from models.cifar10_net import TinyCifarNet
 
 
 def get_args():
@@ -31,11 +30,12 @@ def get_args():
     parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
     # parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
     parser.add_argument('--sess', default='TinyCifar_cifar10', type=str, help='session name')
+    parser.add_argument('--filters', default=6, type=int, help='TinyCifarNet num of filters')
     parser.add_argument('--seed', default=2, type=int, help='random seed')
     parser.add_argument('--weight_decay', default=0.0, type=float, help='weight decay')
-    parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
+    parser.add_argument('--batchsize', default=128, type=int, help='batch size')
     parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
-    parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
+    parser.add_argument('--lr', default=0.0001, type=float, help='base learning rate (default=0.1)')
     parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 
     # arguments for learning with differential privacy
@@ -45,11 +45,11 @@ def get_args():
     parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
 
     parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
-    parser.add_argument('--clip0', default=5., type=float, help='clipping threshold for gradient embedding')
+    parser.add_argument('--clip0', default=30., type=float, help='clipping threshold for gradient embedding')
     parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
     parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
     parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
-    parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
+    parser.add_argument('--num_bases', default=128, type=int, help='dimension of anchor subspace')
 
     parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
     parser.add_argument('--aux_dataset', default='imagenet', type=str,
@@ -62,7 +62,7 @@ def get_args():
 
 def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
           noise_multiplier0, noise_multiplier1, use_cuda, optimizer, loss_func):
-    print('\nEpoch: %d' % epoch)
+    # print('\nEpoch: %d' % epoch)
     # global net, optimizer, train_samples, train_labels, noise_multiplier0, noise_multiplier1, args, gep
     net.train()
     train_loss = 0
@@ -90,32 +90,36 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
             inputs, targets = inputs.cuda(), targets.cuda()
 
         if args.private:
-            logging = batch_idx % 20 == 0
+            logging = False
+            # logging = batch_idx % 20 == 0
             ## compute anchor subspace
             optimizer.zero_grad()
+            # print('gep get anchor space')
             net.gep.get_anchor_space(net, loss_func=loss_func, logging=logging)
             ## collect batch gradients
             batch_grad_list = []
             optimizer.zero_grad()
             # oldold_params = {n: p.detach().clone() for n, p in net.named_parameters() }
+            # print('outputs = net(inputs) ')
             outputs = net(inputs)
             loss = loss_func(outputs, targets)
             with backpack(BatchGrad()):
                 loss.backward()
-            for p in net.parameters():
-                batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
-                del p.grad_batch
-            print('embedding batch gradients')
+            for n, p in net.named_parameters():
+                if not '_ae' in n:
+                    if hasattr(p, 'grad_batch'):
+                        batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
+                        del p.grad_batch
+                    else:
+                        print(f'parameter {n} has no grad_batch')
+            # print('embedding batch gradients')
             ## compute gradient embeddings and residual gradients
-
-            # TODO return clip_val
-
-            # clipped_theta, target_grad = net.gep(flatten_tensor(batch_grad_list), logging = logging)
-            clipped_theta, target_grad = gep(flatten_tensor(batch_grad_list).reshape(inputs.shape[0], -1),
-                                             logging=logging)
+            flat_grads = flatten_tensor(batch_grad_list)
+            # print(f'flat_grads shape {flat_grads.shape}')
+            clipped_theta, target_grad, clip_val = gep(flat_grads.reshape(inputs.shape[0], -1), logging=logging)
             ## add noise to guarantee differential privacy
-            print('clipping and adding noise')
-            theta_noise = torch.normal(0, noise_multiplier0 * args.clip0 / args.batchsize, size=clipped_theta.shape,
+            # print('clipping and adding noise')
+            theta_noise = torch.normal(0, noise_multiplier0 * clip_val / args.batchsize, size=clipped_theta.shape,
                                        device=clipped_theta.device)
             # grad_noise = torch.normal(0, noise_multiplier1*args.clip1/args.batchsize, size=target_grad.shape, device=target_grad.device)
             clipped_theta += theta_noise
@@ -134,12 +138,12 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
 
             ## make use of noisy gradients
             offset = 0
-            for p in net.parameters():
-                shape = p.grad.shape
-                numel = p.grad.numel()
-                p.grad.data = noisy_grad[offset:offset + numel].view(
-                    shape)  # + 0.1*torch.mean(pub_grad, dim=0).view(shape)
-                offset += numel
+            for n, p in net.named_parameters():
+                if not '_ae' in n:
+                    shape = p.shape
+                    numel = p.numel()
+                    p.grad = torch.clone(noisy_grad[offset:offset + numel].view(shape))
+                    offset += numel
         else:
             optimizer.zero_grad()
             outputs = net(inputs)
@@ -155,9 +159,12 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
         total += targets.size(0)
         correct += predicted.eq(targets.data).float().cpu().sum()
         train_accuracy = 100.0 * float(correct) / float(total)
+        net.gep.pbar_dict.update({'batch_idx' :batch_idx, 'train_loss': train_loss, 'train_acc': train_accuracy})
+        net.gep.pbar.set_postfix(net.gep.pbar_dict, refresh=True)
+
 
     t1 = time.time()
-    print('Train loss:%.5f' % (train_loss / steps), 'time: %d s' % (t1 - t0), 'train acc:', train_accuracy, end=' ')
+    # print('Train loss:%.5f' % (train_loss / steps), 'time: %d s' % (t1 - t0), 'train acc:', train_accuracy, end=' ')
     return train_loss / steps, train_accuracy
 
 
@@ -231,7 +238,7 @@ def main(args):
                 torchvision.transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
             ])
             testset = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
-        public_data_loader = torch.utils.data.DataLoader(testset, batch_size=num_public_examples, shuffle=False,
+        public_data_loader = torch.utils.data.DataLoader(testset, batch_size=num_public_examples, shuffle=True,
                                                          num_workers=2)  #
         for public_inputs, public_targets in public_data_loader:
             break
@@ -241,7 +248,12 @@ def main(args):
                         :num_public_examples]
     if (not args.real_labels):
         public_targets = torch.randint(high=10, size=(num_public_examples,))
-    public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
+    # public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
+    public_data_loader = DataLoader(torch.utils.data.TensorDataset(public_inputs, public_targets),
+                                    batch_size=args.batchsize, shuffle=True)
+    public_inputs, public_targets = None, None
+    del public_inputs, public_targets
+    gc.collect()
     print('# of training examples: ', n_training, '# of testing examples: ', n_test, '# of auxiliary examples: ',
           num_public_examples)
 
@@ -256,19 +268,12 @@ def main(args):
     print('rgp enabled?: ', args.rgp)
     print('privacy guarantee: ', eps)
 
-    session = f'{args.sess}_perp_{args.perp}_sigma_{noise_multiplier0:.3}_lr_{args.lr}_clip0_{args.clip0}_seed_{args.seed}'
+    session = f'nonlinear_{args.sess}_sigma_{noise_multiplier0:.3}_lr_{args.lr}_clip0_{args.clip0}_seed_{args.seed}'
     print('session name: ', session)
 
-    print('\n==> Creating GEP class instance')
-    gep = UNetGEP(public_data_loader=public_data_loader, input_length=171578, num_layers=6, base_channels=64,
-                  num_bases=args.num_bases, batch_size=args.batchsize, clip0=args.clip0, clip1=args.clip1)
-    # gep = UNetGEP(public_data_loader=public_data_loader, input_length=536692, num_layers=6, base_channels=64, num_bases=args.num_bases, batch_size=args.batchsize, clip0=args.clip0, clip1=args.clip1)
-
-    # gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp)
-
     ## attach auxiliary data to GEP instance
-    gep.public_inputs = public_inputs
-    gep.public_targets = public_targets
+    # gep.public_inputs = public_inputs
+    # gep.public_targets = public_targets
 
     print('\n==> Creating ResNet20 model instance')
     if (args.resume):
@@ -276,9 +281,10 @@ def main(args):
             assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
             checkpoint_file = './checkpoint/' + args.sess + '.ckpt'
             checkpoint = torch.load(checkpoint_file)
-            net = resnet20()
+            # net = resnet20halfparams()
+            # net = resnet20()
             # net = cifar10Net()
-            # net = TinyCifarNet(num_filters=args.filters)
+            net = TinyCifarNet(num_filters=args.filters)
             restore_param(net.state_dict(), checkpoint['net'])
             best_acc = checkpoint['acc']
             start_epoch = checkpoint['epoch'] + 1
@@ -287,9 +293,10 @@ def main(args):
         except:
             print('resume from checkpoint failed')
     else:
-        net = resnet20()
+        # net = resnet20halfparams()
+        # net = resnet20()
         # net = cifar10Net()
-        # net = TinyCifarNet(num_filters=args.filters)
+        net = TinyCifarNet(num_filters=args.filters)
 
     net = extend(net)
 
@@ -299,6 +306,12 @@ def main(args):
 
     print('total number of parameters: ', num_params)
 
+    print('\n==> Creating GEP class instance')
+    gep = UNetGEP(public_data_loader=public_data_loader, input_length=num_params, num_layers=6, base_channels=4,
+                  num_bases=args.num_bases, batch_size=args.batchsize, clip0=args.clip0, clip1=args.clip1)
+    # gep = UNetGEP(public_data_loader=public_data_loader, input_length=536692, num_layers=6, base_channels=64, num_bases=args.num_bases, batch_size=args.batchsize, clip0=args.clip0, clip1=args.clip1)
+
+    # gep = GEP(args.num_bases, args.batchsize, args.clip0, args.clip1, args.power_iter, add_perp_vector=args.perp)
     if args.private:
         loss_func = nn.CrossEntropyLoss(reduction='sum')
     else:
@@ -338,22 +351,32 @@ def main(args):
     save_every = 10
     wandb.init(project='GEP', name=session)
     lr = args.lr
-    for epoch in range(start_epoch, args.n_epoch):
+    pbar = trange(start_epoch, args.n_epoch)
+    net.gep.pbar = pbar
+    net.gep.pbar_dict = {'epoch': 0,
+                         'batch_idx': 0, 'train_loss': 0.0, 'train_acc': 0.0,
+                         'test_loss': 0.0, 'test_acc': 0.0, 'best_acc': 0.0, 'lr': lr}
+    for epoch in pbar:
+        net.gep.pbar_dict.update({'epoch': epoch})
         # lr = adjust_learning_rate(optimizer, lr, epoch, all_epoch=args.n_epoch)
         train_loss, train_acc = train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
                                       noise_multiplier0, noise_multiplier1, use_cuda, optimizer, loss_func)
-        test_loss, test_acc = test(args, net, testloader, use_cuda, loss_func, sigma=noise_multiplier0)
+        test_loss, test_acc = test(args, net, testloader, use_cuda, loss_func)
         # Save checkpoint.
         if test_acc > best_acc:
             best_acc = test_acc
             save_checkpoint(net, test_acc, epoch, session)
-        wandb.log({
+        results = {
             'train_loss': train_loss,
             'train_acc': train_acc,
             'test_loss': test_loss,
             'test_acc': test_acc,
             'best_acc': best_acc,
-            'lr': lr}, step=epoch)
+            'lr': lr}
+
+        wandb.log(results, step=epoch)
+        net.gep.pbar_dict.update(results)
+        pbar.set_postfix(net.gep.pbar_dict, refresh=True)
 
         history.append([lr, train_loss, train_acc, test_loss, test_acc, best_acc])
         print('lr: ', lr)

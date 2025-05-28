@@ -41,7 +41,6 @@ def get_args():
     parser.add_argument('--perp', '-v', action='store_true', help='add perpendicular vector')
     parser.add_argument('--eps', default=8., choices=[8., 3., 1.], type=float, help='privacy parameter epsilon')
     parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
-    parser.add_argument('--delta', default=1e-5, type=float, help='desired delta')
     parser.add_argument('--public_perp_split', default=-1.0, type=float, help='split public data for perp train')
 
     parser.add_argument('--rgp', action='store_true', help='use residual gradient perturbation or not')
