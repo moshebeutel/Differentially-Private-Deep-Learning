@@ -15,6 +15,8 @@ from backpack import backpack, extend
 from backpack.extensions import BatchGrad
 from torch import optim
 from torch.utils.data import DataLoader
+
+
 # from vision.GEP.utils import print_memory_usage
 
 
@@ -214,7 +216,7 @@ class GEP(nn.Module):
                     cur_target = torch.mean(grad, dim=0)
                     cur_error = torch.sum(torch.square(cur_approx - cur_target)) / torch.sum(torch.square(cur_target))
                     print('group %d, param: %d, num of bases: %d, group wise approx error: %.2f%%' % (
-                    i, num_param, self.num_bases_list[i], 100 * cur_error.item()))
+                        i, num_param, self.num_bases_list[i], 100 * cur_error.item()))
                     if (i in self.approx_error):
                         self.approx_error[i].append(cur_error.item())
                     else:
@@ -264,6 +266,12 @@ def initialize_weights(module: nn.Module):
             nn.init.kaiming_normal_(m.weight)
             if m.bias is not None:
                 m.bias.data.zero_()
+        elif isinstance(m, nn.ConvTranspose1d):
+            nn.init.kaiming_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.zero_()
+
+
 
 
 class Unet1dAutoencoder(nn.Module):
@@ -403,7 +411,11 @@ class UNetGEP(GEP):
         self.public_loader = public_data_loader
 
     def get_anchor_space(self, net, loss_func, logging=False):
+        cur_params = {n: p.data for n, p in net.named_parameters() if '_ae' not in n}
         self._train_nonlinear_dim_reduction(net)
+        for n, p in net.named_parameters():
+            if n in cur_params:
+                p.data = cur_params[n]
 
     @torch.no_grad()
     def get_approx_grad(self, embedding):
@@ -425,8 +437,8 @@ class UNetGEP(GEP):
         batch_num = 0
         for batch in self.public_loader:
             batch_num += 1
-            self.pbar_dict.update({'get pub grad batch': batch_num})
-            self.pbar.set_postfix(self.pbar_dict, refresh=True)
+            # self.pbar_dict.update({'get pub grad batch': batch_num})
+            # self.pbar.set_postfix(self.pbar_dict, refresh=True)
             if batch_num > public_num_batches:
                 break
             batch_grad_list = []
@@ -440,14 +452,12 @@ class UNetGEP(GEP):
             with backpack(BatchGrad()):
                 loss.backward()
             for p in net.parameters():
-                if p.grad is None or p.grad_batch is None:
-                    # print('nograd for', p)
-                    pass
-                else:
+                if p.grad is not None and p.grad_batch is not None:
                     batch_grad_list.append(p.grad_batch.reshape(p.grad_batch.shape[0], -1))
                     # print(p.grad_batch.shape)
                     p.grad_batch = p.grad_batch.detach().cpu()
                     p.grad_batch = None
+                    p.grad = None
                     del p.grad_batch
             # optimizer.step()
             flat_grads_tensor_list.append(flatten_tensor(batch_grad_list))
@@ -463,59 +473,64 @@ class UNetGEP(GEP):
         optimizer.zero_grad()
 
         dataloader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(torch.vstack(flat_grads_tensor_list)),
-                                                 batch_size=self.batch_size, shuffle=True)
+                                                 batch_size=self.batch_size // 16, shuffle=True)
 
         flat_grads_tensor_list = [t.detach().cpu() for t in flat_grads_tensor_list]
         flat_grads_tensor_list = None
         del flat_grads_tensor_list
 
-        # autoencoder = get_autoencoder()
         self._ae = self._ae.to(device)
-        autoencoder_optimizer = optim.Adam(self._ae.parameters(), lr=0.01)
-        # autoencoder_loss_fn = nn.CosineEmbeddingLoss()
-        autoencoder_loss_fn = nn.MSELoss()
+        # autoencoder_optimizer = optim.Adam(self._ae.parameters(), lr=1.0)
+        autoencoder_optimizer = optim.SGD(self._ae.parameters(), lr=1.0, momentum=0.9, weight_decay=0)
+        autoencoder_loss_fn = nn.CosineEmbeddingLoss()
+        # autoencoder_loss_fn = nn.MSELoss()
         self._ae.train()
         # print_memory_usage(cpu=True, gpu=False)
 
         epoch_loss = 1.0
 
-        for epoch in range(3):
+        for epoch in range(100):
             # print(f'\nEpoch {epoch + 1}/5 of training autoencoder epoch loss {epoch_loss}\n')
-            if epoch_loss < 0.0001:
+            if epoch_loss < 0.001:
                 # print('Early stop training autoencoder before epoch ', epoch + 1, ' with loss ', epoch_loss, '\n')
                 break
 
             epoch_loss = 0.0
             for i, batch in enumerate(dataloader):
-                self.pbar_dict.update({'ae_epoch': epoch, 'ae_batch': i})
+                self.pbar_dict.update({'ae_epoch_batch': (epoch, i)})
 
                 # print_memory_usage(cpu=True, gpu=False)
 
                 data = batch[0].to(device)
+                target = torch.ones(size=(data.shape[0],)).to(device)
 
                 autoencoder_optimizer.zero_grad()
                 # print(f'data shape {data.shape}')
                 reconstructed, latent = self._ae(data.unsqueeze(1))
 
+                assert reconstructed.shape[-1] == data.shape[-1], f'Expected reconstructed be size data - ' \
+                                                                  f'{reconstructed.shape[-1]} != {data.shape[-1]}'
                 # Trim reconstructed tensor to match data size
                 reconstructed = reconstructed[..., :data.size(-1)]
 
-                autoencoder_loss = autoencoder_loss_fn(reconstructed.squeeze(), data)  # Minimize reconstruction error
+                autoencoder_loss = autoencoder_loss_fn(reconstructed.squeeze(), data, target)  # Minimize reconstruction error
                 batch_loss = float(autoencoder_loss)
                 epoch_loss += batch_loss
                 autoencoder_loss.backward()
+                sum_grad_norm = sum([torch.norm(p.grad.data) for p in self._ae.parameters()])
+                print(f'sum grad norm {sum_grad_norm}')
                 autoencoder_optimizer.step()
 
                 data, reconstructed, latent = data.detach().cpu(), reconstructed.detach().cpu(), latent.detach().cpu()
                 data, reconstructed, latent = None, None, None
-                del data, reconstructed, latent
+                del data, reconstructed, latent, target
 
                 autoencoder_loss = autoencoder_loss.detach().cpu()
                 autoencoder_loss = None
                 del autoencoder_loss
                 gc.collect()
                 torch.cuda.empty_cache()
-                self.pbar_dict.update({"ae_batch_loss": batch_loss, 'ae_epoch_loss': epoch_loss})
+                self.pbar_dict.update({'ae_epoch_batch_loss': (epoch_loss, batch_loss)})
                 self.pbar.set_postfix(self.pbar_dict, refresh=True)
             # print(f'Epoch {epoch}  batch_loss {batch_loss} epoch_loss {epoch_loss}')
         self._ae = self._ae.to('cpu')
@@ -553,24 +568,25 @@ class UNetGEP(GEP):
 
 if __name__ == '__main__':
     import pandas as pd
+
     res = []
-    for ln, ld, bc in product([2,4,6],[128,256], [4,16,64]):
+    input_length_values = [3118, 8928]  # 6 , 16 layers TinyCifarNet resp.
+    layers_num_values = [2, 4, 6]
+    latent_dim_values = [128, 256]
+    base_channels_values = [4, 16, 64]
+    for il, ln, ld, bc in product(input_length_values, layers_num_values, latent_dim_values, base_channels_values):
         print(ln, ld, bc)
-        # 16 layers
-        # model = Unet1dAutoencoder(input_length=8928, num_layers=ln, latent_dim=ld, base_channels=bc)
-        # 6 layers
-        model = Unet1dAutoencoder(input_length=3118, num_layers=ln, latent_dim=ld, base_channels=bc)
-        # model = cifar10Net()
+        model = Unet1dAutoencoder(input_length=il, num_layers=ln, latent_dim=ld, base_channels=bc)
         numel = sum([p.numel() for p in model.parameters()])
         print('number of parameters:', numel)
-        res.append([ln, ld, bc, numel])
+        res.append([il, ln, ld, bc, numel])
     print(res)
-    df = pd.DataFrame(columns=['layers', 'latent_dim', 'base_channel', 'numel'], data=res)
+    df = pd.DataFrame(columns=['input_length', 'layers', 'latent_dim', 'base_channel', 'numel'], data=res)
     min_numel = df['numel'].min()
+    print('@@@@@@@@@@@@@@@')
+    print(df.groupby(['input_length', 'latent_dim'])['numel'].min())
     print('$$$$$$$$$$$$$$$')
     print(df)
     print('*************************')
     print('min numel', min_numel)
     print(df[df['numel'] == min_numel])
-
-

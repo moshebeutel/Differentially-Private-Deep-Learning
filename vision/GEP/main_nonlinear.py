@@ -49,7 +49,7 @@ def get_args():
     parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
     parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
     parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
-    parser.add_argument('--num_bases', default=128, type=int, help='dimension of anchor subspace')
+    parser.add_argument('--num_bases', default=256, type=int, help='dimension of anchor subspace')
 
     parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
     parser.add_argument('--aux_dataset', default='imagenet', type=str,
@@ -355,7 +355,7 @@ def main(args):
     net.gep.pbar = pbar
     net.gep.pbar_dict = {'epoch': 0,
                          'batch_idx': 0, 'train_loss': 0.0, 'train_acc': 0.0,
-                         'test_loss': 0.0, 'test_acc': 0.0, 'best_acc': 0.0, 'lr': lr}
+                         'test_loss': 0.0, 'test_acc': 0.0, 'best_acc': 0.0}
     for epoch in pbar:
         net.gep.pbar_dict.update({'epoch': epoch})
         # lr = adjust_learning_rate(optimizer, lr, epoch, all_epoch=args.n_epoch)
@@ -371,8 +371,8 @@ def main(args):
             'train_acc': train_acc,
             'test_loss': test_loss,
             'test_acc': test_acc,
-            'best_acc': best_acc,
-            'lr': lr}
+            'best_acc': best_acc} #,
+            # 'lr': lr}
 
         wandb.log(results, step=epoch)
         net.gep.pbar_dict.update(results)
