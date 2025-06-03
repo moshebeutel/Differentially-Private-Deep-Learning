@@ -102,11 +102,12 @@ def get_bases_svd(pub_grad: torch.Tensor, num_bases: int) -> tuple[torch.Tensor,
     num_p = pub_grad.shape[1]
 
     num_bases = min(num_bases, num_p)
-    U, S, Vh = torch.svd(pub_grad)
-    L = Vh[:, :num_bases]
+    # U, S, Vh = torch.svd(pub_grad)
+    U, S, Vh = torch.linalg.svd(pub_grad, full_matrices=False)
+    L = Vh.mH[:, :num_bases]
     error_rate, cosine, angle_deg = check_approx_error(L, pub_grad, return_cosine=True)
     # print(f'get_bases_svd: error_rate: {100*error_rate:.2f}%  cosine: {cosine}, angle(deg): {angle_deg}')
-    return Vh, num_bases, error_rate
+    return Vh.mH, num_bases, error_rate
 
 
 class LinearCombination(nn.Module):
@@ -131,7 +132,8 @@ class GEP(nn.Module):
         self.clip1 = clip1
         self.power_iter = power_iter
         self.batch_size = batch_size
-        self.approx_error = {}
+        self.approx_error_private = {}
+        self.approx_error_public = []
         self.num_anchor_grads: int = 0
         self.selected_bases_list: list[torch.Tensor] = []
         self.selected_bases_perp_list: list[torch.Tensor] = []
@@ -152,7 +154,7 @@ class GEP(nn.Module):
         assert isinstance(value, list), f'Expected value to be a list, but got {type(value)}'
         assert len(value) > 0, f'Expected value to be non-empty, but got {value}'
         sqrt_num_param_list = np.sqrt(np.array(value))
-        num_bases_list: np.ndarray[int] = self.num_bases * (sqrt_num_param_list / np.sum(sqrt_num_param_list))
+        num_bases_list: np.ndarray = self.num_bases * (sqrt_num_param_list / np.sum(sqrt_num_param_list))
         num_bases_list = num_bases_list.astype(int)
 
         if self.add_perp_vector:
@@ -271,7 +273,7 @@ class GEP(nn.Module):
             if self.add_perp_vector:
                 self.selected_bases_perp_list = selected_bases_perp_list
             self.num_bases_list = num_bases_list
-            self.approx_errors = pub_errs
+            self.approx_error_public = pub_errs
             self.centers = centers
         del anchor_grads
 
@@ -303,13 +305,13 @@ class GEP(nn.Module):
                 # cur_approx = torch.matmul(torch.mean(embedding, dim=0).view(1, -1), selected_bases.T).view(-1)
                 # cur_target = torch.mean(grad, dim=0)
                 # cur_error = torch.sum(torch.square(cur_approx-cur_target))/torch.sum(torch.square(cur_target))
-                print('group %d, param: %d, num of bases: %d, group wise approx error: %.2f%%' % (
-                i, num_param, self.num_bases_list[i], 100 * float(cur_error)))
-                if i in self.approx_error:
-                    self.approx_error[i].append(float(cur_error))
+                print('group %d, param: %d, num of bases: %d, group wise approx error: %.2f%%'
+                      % (i,  num_param, self.num_bases_list[i], 100 * float(cur_error)))
+                if i in self.approx_error_private:
+                    self.approx_error_private[i].append(float(cur_error))
                 else:
-                    self.approx_error[i] = []
-                    self.approx_error[i].append(float(cur_error))
+                    self.approx_error_private[i] = []
+                    self.approx_error_private[i].append(float(cur_error))
 
             embedding_list.append(embedding)
             offset += num_param

@@ -50,6 +50,7 @@ parser.add_argument('--weight_decay', default=0.0, type=float, help='weight deca
 parser.add_argument('--batchsize', default=500, type=int, help='batch size')
 parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
 parser.add_argument('--lr', default=0.1, type=float, help='base learning rate (default=0.1)')
+parser.add_argument('--perp_lr', default=0.01, type=float, help='learning rate for perp')
 parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 ## arguments for learning with differential privacy
 # parser.add_argument('--private', '-p', action='store_true', help='enable differential privacy')
@@ -69,6 +70,7 @@ parser.add_argument('--real_labels', action='store_true', help='use real labels 
 parser.add_argument('--aux_dataset', default='imagenet', type=str,
                     help='name of the public dataset, [cifar10, cifar100, imagenet]')
 parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
+parser.add_argument('--wandb', type=bool, default=True, help='enable wandb')
 
 args = parser.parse_args()
 
@@ -82,19 +84,20 @@ sweep_configuration = {
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
-        "lr": {"values": [0.00001]},
+        "lr": {"values": [1e-4]},
+        "perp_lr": {"values": [1e-3, 1e-4, -1e-3, -1e-4]},
         "num_groups": {"values": [1]},
         "seed": {"values": [2]},
         "clip0": {"values": [30.0]},
         "eps": {"values": [8.0]},
-        "public_perp_split": {"values": [0.95]},
-        "momentum": {"values": [0.95]},
+        "public_perp_split": {"values": [-1]},
+        "momentum": {"values": [0.9]},
         "filters": {"values": [16]},
-        "n_epoch": {"values": [30]},
-        "num_bases": {"values": [800]},
+        "n_epoch": {"values": [25]},
+        "num_bases": {"values": [1000]},
         "aux_data_size": {"values": [2000]},
         "batchsize": {"values": [128]},
-        "perp": {"values": [perp]},
+        "perp": {"values": [True, False]},
         "override": {"values": [False]}
     },
 }

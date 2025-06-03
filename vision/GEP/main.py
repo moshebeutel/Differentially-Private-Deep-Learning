@@ -28,11 +28,13 @@ def get_args():
     parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
     # parser.add_argument('--sess', default='resnet20_cifar10', type=str, help='session name')
     parser.add_argument('--sess', default='TinyCifar_cifar10', type=str, help='session name')
+    parser.add_argument('--filters', default=16, type=int, help='TinyCifarNet num of filters')
     parser.add_argument('--seed', default=2, type=int, help='random seed')
     parser.add_argument('--weight_decay', default=0.0, type=float, help='weight decay')
-    parser.add_argument('--batchsize', default=1000, type=int, help='batch size')
+    parser.add_argument('--batchsize', default=10, type=int, help='batch size')
     parser.add_argument('--n_epoch', default=200, type=int, help='total number of epochs')
     parser.add_argument('--lr', default=0.01, type=float, help='base learning rate (default=0.1)')
+    parser.add_argument('--perp_lr', default=0.01, type=float, help='learning rate for perp')
     parser.add_argument('--momentum', default=0.9, type=float, help='value of momentum')
 
     ## arguments for learning with differential privacy
@@ -48,12 +50,13 @@ def get_args():
     parser.add_argument('--clip1', default=2., type=float, help='clipping threshold for residual gradients')
     parser.add_argument('--power_iter', default=1, type=int, help='number of power iterations')
     parser.add_argument('--num_groups', default=1, type=int, help='number of parameters groups')
-    parser.add_argument('--num_bases', default=1000, type=int, help='dimension of anchor subspace')
+    parser.add_argument('--num_bases', default=10, type=int, help='dimension of anchor subspace')
 
     parser.add_argument('--real_labels', action='store_true', help='use real labels for auxiliary dataset')
     parser.add_argument('--aux_dataset', default='imagenet', type=str,
                         help='name of the public dataset, [cifar10, cifar100, imagenet]')
-    parser.add_argument('--aux_data_size', default=2000, type=int, help='size of the auxiliary dataset')
+    parser.add_argument('--aux_data_size', default=20, type=int, help='size of the auxiliary dataset')
+    parser.add_argument('--wandb', type=bool, default=True, help='enable wandb')
 
     args = parser.parse_args()
     return args
@@ -79,7 +82,7 @@ def print_distance(net, oldold_params, old_params, new_params):
         dist_curr_oldold_gep = 0.0
 
         for n, p in net.named_parameters():
-            if 'gep.null' in n:
+            if 'gep.null' not in n:
                 dist_old_new += float(torch.dist(old_params[n], new_params[n]))
                 dist_curr_old += float(torch.dist(p, old_params[n]))
                 dist_curr_new += float(torch.dist(p, new_params[n]))
@@ -93,19 +96,26 @@ def print_distance(net, oldold_params, old_params, new_params):
                 dist_oldold_new_gep += float(torch.dist(oldold_params[n], new_params[n]))
                 dist_curr_oldold_gep += float(torch.dist(p, oldold_params[n]))
                 dist_old_oldold_gep += float(torch.dist(old_params[n], oldold_params[n]))
-
+        print('**********************************')
+        print('### net distance ###')
         print('dist old new', dist_old_new)
         print('dist_curr_old', dist_curr_old)
         print('dist_curr_new', dist_curr_new)
-        print('dist_old_new_gep', dist_old_new_gep)
-        print('dist_curr_old_gep', dist_curr_old_gep)
-        print('dist_curr_new_gep', dist_curr_new_gep)
+
         print('dist oldold new', dist_oldold_new)
         print('dist_curr_oldold', dist_curr_oldold)
         print('dist_old_oldold', dist_old_oldold)
+
+        print('%%%   gep distance %%%%')
+
+        print('dist_old_new_gep', dist_old_new_gep)
+        print('dist_curr_old_gep', dist_curr_old_gep)
+        print('dist_curr_new_gep', dist_curr_new_gep)
+
         print('dist_oldold_new_gep', dist_oldold_new_gep)
         print('dist_curr_oldold_gep', dist_curr_oldold_gep)
         print('dist_old_oldold_gep', dist_old_oldold_gep)
+        print('+++++++++++++++++++++++++++++++++++++')
 
 
 def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_labels,
@@ -204,27 +214,26 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
 
                     v = torch.mul(args.momentum, v) + torch.reshape(noisy_grad[offset:offset + numel], shape)
                     new_params[n] = torch.sub(p, torch.mul(args.lr, v))
-                    # new_params[n] = torch.sub(p, torch.mul(args.lr,
-                    #                                        torch.reshape(noisy_grad[offset:offset + numel], shape)))
-
                     p.grad = None
                     offset += numel
             if gep.add_perp_vector:
                 for group_num in range(args.num_groups):
                     new_params[f'gep.nullspace_factors.{group_num}.weight'] = gep.nullspace_factors[group_num].weight
 
-                assert hasattr(gep, 'public_perp_loader'), 'Expected attribute public perp split'
-
+                # >>> public perp >>>
+                # assert hasattr(gep, 'public_perp_loader'), 'Expected attribute public perp split'
                 # for public_inputs, public_targets in gep.public_perp_loader:
                 #     public_inputs, public_targets = public_inputs.cuda(), public_targets.cuda()
                 #     public_outputs = functional_call(net, new_params, (public_inputs,))
                 #     public_loss = loss_func(public_outputs, public_targets)
                 #     public_loss.backward(retain_graph=True)
+                # <<< public perp <<<
 
                 perp_outputs = functional_call(net, new_params, (inputs,))
                 perp_loss = loss_func(perp_outputs, targets)
                 perp_loss.backward(retain_graph=True)
 
+            # print_distance(net, oldold_params, old_params, new_params)
             with torch.no_grad():
                 offset = 0
                 for n, p in net.named_parameters():
@@ -233,6 +242,9 @@ def train(args, epoch, net, gep, n_training, trainloader, train_samples, train_l
                         numel = p.numel()
                         p.grad = noisy_grad[offset:offset + numel].view(shape)
                         offset += numel
+                    else:
+                        p.data += (p.grad.data * args.perp_lr)
+                        p.grad = None
             optimizer.step()
             # print_distance(net, oldold_params, old_params, new_params)
         else:  # not args.private
@@ -370,18 +382,21 @@ def main(args):
     ## attach auxiliary data to GEP instance
     gep.public_inputs = public_inputs
     gep.public_targets = public_targets
-    if args.perp:
-        if args.public_perp_split > 0.0:
-            gep.public_perp_split = args.public_perp_split if args.perp else 1.0
-            full_size = public_inputs.shape[0]
-            split_ind = int(full_size * gep.public_perp_split)
-            public_perp_dataset = torch.utils.data.TensorDataset(public_inputs[split_ind:].cpu(),
-                                                                 public_targets[split_ind:].cpu())
-        else:
-            public_perp_dataset = torch.utils.data.TensorDataset(public_inputs.cpu(), public_targets.cpu())
-        gep.public_perp_loader = torch.utils.data.DataLoader(public_perp_dataset, batch_size=args.batchsize,
-                                                             shuffle=True,
-                                                             num_workers=2)
+
+    # >>> public perp >>>
+    # if args.perp:
+    #     if args.public_perp_split > 0.0:
+    #         gep.public_perp_split = args.public_perp_split if args.perp else 1.0
+    #         full_size = public_inputs.shape[0]
+    #         split_ind = int(full_size * gep.public_perp_split)
+    #         public_perp_dataset = torch.utils.data.TensorDataset(public_inputs[split_ind:].cpu(),
+    #                                                              public_targets[split_ind:].cpu())
+    #     else:
+    #         public_perp_dataset = torch.utils.data.TensorDataset(public_inputs.cpu(), public_targets.cpu())
+    #     gep.public_perp_loader = torch.utils.data.DataLoader(public_perp_dataset, batch_size=args.batchsize,
+    #                                                          shuffle=True,
+    #                                                          num_workers=2)
+    # <<< public perp <<<
 
     print('\n==> Creating ResNet20 model instance')
     if (args.resume):
@@ -449,7 +464,8 @@ def main(args):
     print('\n==> Start training')
     history = []
     save_every = 10
-    wandb.init(project='GEP', name=session)
+    if args.wandb:
+        wandb.init(project='GEP', name=session)
     lr = args.lr
     for epoch in range(start_epoch, args.n_epoch):
         # lr = adjust_learning_rate(optimizer, lr, epoch, all_epoch=args.n_epoch)
@@ -461,15 +477,16 @@ def main(args):
         if test_acc > best_acc:
             best_acc = test_acc
             save_checkpoint(net, test_acc, epoch, session)
-        wandb.log({
-            'train_loss': train_loss,
-            'train_acc': train_acc,
-            'test_loss': test_loss,
-            'test_acc': test_acc,
-            'best_acc': best_acc,
-            'lr': lr}, step=epoch)
-        if args.perp:
-            wandb.log({'perp_factor': perp_history[-1]}, step=epoch)
+        if args.wandb:
+            wandb.log({
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'test_loss': test_loss,
+                'test_acc': test_acc,
+                'best_acc': best_acc,
+                'lr': lr}, step=epoch)
+            if args.perp:
+                wandb.log({'perp_factor': perp_history[-1]}, step=epoch)
         history.append([lr, train_loss, train_acc, test_loss, test_acc, best_acc])
         print('lr: ', lr)
         if epoch % save_every == save_every - 1 or epoch == args.n_epoch - 1:
@@ -485,7 +502,7 @@ def main(args):
         pass
     import pickle
     bfile = open('approx_errors/' + args.sess + '.pickle', 'wb')
-    pickle.dump(net.gep.approx_error, bfile)
+    pickle.dump(net.gep.approx_error_private, bfile)
     bfile.close()
 
 

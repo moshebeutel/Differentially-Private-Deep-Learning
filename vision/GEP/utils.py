@@ -106,7 +106,7 @@ def save_checkpoint(net, acc, epoch, sess):
         'acc': acc,
         'epoch': epoch,
         'rng_state': torch.get_rng_state(),
-        'approx_error': net.gep.approx_error
+        'approx_error': net.gep.approx_error_private
     }
     
     if not os.path.isdir('checkpoint'):
