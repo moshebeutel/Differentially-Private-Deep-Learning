@@ -138,6 +138,7 @@ class GEP(nn.Module):
         self.selected_bases_list: list[torch.Tensor] = []
         self.selected_bases_perp_list: list[torch.Tensor] = []
         self.centers: list[torch.Tensor] = []
+        self.scales: list[torch.Tensor] = []
         self.add_perp_vector = add_perp_vector
         self.num_bases = num_bases
         self.num_bases_list: list[int] = [num_bases]
@@ -190,7 +191,7 @@ class GEP(nn.Module):
             else:
                 grad_centered = torch.matmul(embedding[:, offset:offset + num_bases].view(bs, -1), bases.T)
 
-            grad = self.centers[i] + grad_centered
+            grad = self.centers[i] + self.scales[i] * grad_centered
 
             if bs > 1:
                 grad_list.append(grad.view(bs, -1))
@@ -232,6 +233,7 @@ class GEP(nn.Module):
             selected_bases_perp_list = []
             pub_errs = []
             centers = []
+            scales = []
 
             sqrt_num_param_list = np.sqrt(np.array(num_param_list))
             num_bases_list: np.ndarray[int] = self.num_bases * (sqrt_num_param_list / np.sum(sqrt_num_param_list))
@@ -242,12 +244,14 @@ class GEP(nn.Module):
 
             for i, num_param in enumerate(num_param_list):
                 pub_grad = anchor_grads[:, offset:offset + num_param]
+                scale = float(torch.linalg.norm(pub_grad, dim=1).mean())
+                scales.append(scale)
                 centers.append(torch.mean(pub_grad, dim=0, keepdim=True))
                 assert pub_grad.shape == (self.num_anchor_grads, num_param), (f'pub_grad.shape: {pub_grad.shape},'
                                                                               f' Expected (self.num_anchor_grads, '
                                                                               f'num_param) '
                                                                               f'{(self.num_anchor_grads, num_param)}')
-                pub_grad_centered = pub_grad - centers[i]
+                pub_grad_centered = (pub_grad - centers[i]) / scale
                 assert pub_grad_centered.shape == pub_grad.shape, (
                     f'pub_grad_centered.shape: {pub_grad_centered.shape},'
                     f' pub_grad.shape: {pub_grad.shape}')
@@ -275,6 +279,7 @@ class GEP(nn.Module):
             self.num_bases_list = num_bases_list
             self.approx_error_public = pub_errs
             self.centers = centers
+            self.scales = scales
         del anchor_grads
 
     def forward(self, target_grad, logging=True):
@@ -290,7 +295,7 @@ class GEP(nn.Module):
             grad = target_grad[:, offset:offset + num_param]
             assert grad.shape == (self.batch_size, num_param), f'grad.shape: {grad.shape},'
             assert self.centers[i].shape == (1, num_param), f'centers[i].shape: {self.centers[i].shape},'
-            grad_centered = grad - self.centers[i]
+            grad_centered = grad - self.centers[i] / self.scales[i]
             assert grad_centered.shape == grad.shape, f'grad_centered.shape: {grad_centered.shape},'
             selected_bases = self.selected_bases_list[i]
             assert selected_bases.shape == (num_param, self.num_bases_list[i]), (

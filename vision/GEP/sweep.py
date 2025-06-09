@@ -79,16 +79,16 @@ perp = args.perp
 override = args.override
 
 sweep_configuration = {
-    "name": f"GEP_SEED_2_TINY_{'Perp' if perp else 'NoPerp'}",
+    "name": f"GEP_SEED_2_TINY_NO_BN_{'Perp' if perp else 'NoPerp'}",
     # "name": f"GEP_SEED_2_TINY_COMPARE",
     "method": "grid",
     "metric": {"goal": "maximize", "name": "test_acc"},
     "parameters": {
-        "lr": {"values": [1e-4]},
-        "perp_lr": {"values": [1e-3, 1e-4, -1e-3, -1e-4]},
+        "lr": {"values": [1e-5]},
+        "perp_lr": {"values": [1e-5]},
         "num_groups": {"values": [1]},
         "seed": {"values": [2]},
-        "clip0": {"values": [30.0]},
+        "clip0": {"values": [35.0]},
         "eps": {"values": [8.0]},
         "public_perp_split": {"values": [-1]},
         "momentum": {"values": [0.9]},
@@ -96,8 +96,8 @@ sweep_configuration = {
         "n_epoch": {"values": [25]},
         "num_bases": {"values": [1000]},
         "aux_data_size": {"values": [2000]},
-        "batchsize": {"values": [128]},
-        "perp": {"values": [True, False]},
+        "batchsize": {"values": [64]},
+        "perp": {"values": [perp]},
         "override": {"values": [False]}
     },
 }
